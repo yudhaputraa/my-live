@@ -1,0 +1,30 @@
+[project]
+name = "mylife-vocab-finance"
+version = "1.0.0"
+description = "Aplikasi Hafalan Kosakata American Oxford 5000 & Smart Finance Tracker (50/30/20)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "MyLife Developer" }
+]
+dependencies = [
+    "flet>=1.1.2",
+    "openpyxl>=3.1.0",
+]
+
+[tool.flet]
+org = "com.mylife"
+project = "mylife_vocab_finance"
+product = "MyLife Vocab & Finance"
+company = "MyLife Studio"
+copyright = "Copyright (C) 2026 by MyLife Studio"
+build_number = 1
+
+[tool.flet.splash]
+color = "#0E0B1D"
+dark_color = "#0E0B1D"
+
+[tool.flet.app]
+path = "."
+exclude = ["data_chunks", "raw_words.json", "American_Oxford_5000 (1).pdf", "template_keuangan.xlsx"]
+
