@@ -678,6 +678,20 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
+    def update_transaction(self, tx_id: int, tanggal: str, tipe: str, kategori: str, deskripsi: str, total: float, notes: str = ""):
+        conn = self.get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE finance_transactions
+            SET tanggal = ?, tipe = ?, kategori = ?, deskripsi = ?, total = ?, notes = ?
+            WHERE id = ?
+            """,
+            (tanggal, tipe, kategori, deskripsi.strip(), total, notes.strip(), tx_id),
+        )
+        conn.commit()
+        conn.close()
+
     def get_transactions(self, year: Optional[int] = None, month: Optional[int] = None, tipe_filter: str = "SEMUA") -> List[Dict[str, Any]]:
         conn = self.get_conn()
         cur = conn.cursor()

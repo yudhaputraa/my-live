@@ -37,6 +37,16 @@ def format_rp(amount: float) -> str:
         return "Rp 0"
 
 
+def parse_penjelasan(penjelasan: str):
+    if not penjelasan:
+        return "", ""
+    import re
+    parts = re.split(r'\bcontoh(?:\s+kalimat)?\s*:\s*', str(penjelasan), flags=re.IGNORECASE)
+    desc = parts[0].strip()
+    example = parts[1].strip().strip("'\"") if len(parts) > 1 else ""
+    return desc, example
+
+
 class MyLifeApp:
     def __init__(self, page: ft.Page):
         self.page = page
@@ -97,7 +107,7 @@ class MyLifeApp:
         self.body_container = ft.Container(
             expand=True,
             bgcolor=C_BG_DEEP,
-            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+            padding=ft.Padding.only(left=12, right=12, top=6, bottom=8),
         )
 
         self.nav_bar = ft.NavigationBar(
@@ -136,8 +146,8 @@ class MyLifeApp:
 
         self.header_bar = ft.Container(
             bgcolor=C_CARD_DARK,
-            padding=ft.Padding.symmetric(horizontal=16, vertical=12),
-            border=ft.Border.only(bottom=ft. border.BorderSide(1, C_MUTED) if hasattr(ft.border, "BorderSide") else None),
+            padding=ft.Padding.symmetric(horizontal=16, vertical=10),
+            border=ft.Border.only(bottom=ft.border.BorderSide(1, C_MUTED) if hasattr(ft.border, "BorderSide") else None),
             content=ft.Row(
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -146,17 +156,17 @@ class MyLifeApp:
                         spacing=10,
                         controls=[
                             ft.Container(
-                                width=36,
-                                height=36,
+                                width=34,
+                                height=34,
                                 border_radius=ft.BorderRadius.all(10),
                                 bgcolor=C_PRIMARY,
                                 alignment=ft.Alignment.CENTER,
-                                content=ft.Icon(ft.Icons.AUTO_AWESOME, color=C_TEXT_LIGHT, size=20),
+                                content=ft.Icon(ft.Icons.AUTO_AWESOME, color=C_TEXT_LIGHT, size=18),
                             ),
                             ft.Column(
                                 spacing=1,
                                 controls=[
-                                    ft.Text("MyLife Vocab & Finance", size=16, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
+                                    ft.Text("MyLife Vocab & Finance", size=15, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
                                     ft.Text("Oxford 5000™ & 50/30/20 Budget", size=11, color=C_SECONDARY),
                                 ],
                             ),
@@ -254,14 +264,13 @@ class MyLifeApp:
         if show_month:
             controls.append(
                 ft.Dropdown(
-                    label="Bulan",
                     value=str(self.selected_month),
-                    width=165,
-                    color=C_TEXT_LIGHT,
+                    width=122,
+                    dense=True,
+                    color=C_WHITE,
                     bgcolor=C_MUTED,
-                    border_color=C_SECONDARY,
-                    label_style=ft.TextStyle(color=C_SECONDARY, size=11),
-                    text_size=13,
+                    content_padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                    text_size=12,
                     options=[ft.dropdown.Option(key=k, text=t) for k, t in months],
                     on_select=on_month_select,
                 )
@@ -269,14 +278,13 @@ class MyLifeApp:
 
         controls.append(
             ft.Dropdown(
-                label="Tahun",
                 value=str(self.selected_year),
-                width=125 if show_month else 180,
-                color=C_TEXT_LIGHT,
+                width=86 if show_month else 120,
+                dense=True,
+                color=C_WHITE,
                 bgcolor=C_MUTED,
-                border_color=C_SECONDARY,
-                label_style=ft.TextStyle(color=C_SECONDARY, size=11),
-                text_size=13,
+                content_padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                text_size=12,
                 options=[ft.dropdown.Option(key=y, text=y) for y in years],
                 on_select=on_year_select,
             )
@@ -342,9 +350,12 @@ class MyLifeApp:
             self.notify(f"Kata '{word_of_day['word']}' ditandai SUDAH HAFAL!", C_PRIMARY)
             self.render()
 
+        wod_desc, wod_ex = parse_penjelasan(word_of_day.get("penjelasan", ""))
+
         return ft.ListView(
             expand=True,
             spacing=12,
+            padding=ft.Padding.only(bottom=30),
             controls=[
                 # Banner Sambutan
                 ft.Container(
@@ -466,7 +477,27 @@ class MyLifeApp:
                             ),
                             ft.Text(word_of_day.get("word", ""), size=20, weight=ft.FontWeight.BOLD, color=C_WHITE),
                             ft.Text(f"Arti: {word_of_day.get('arti', '')}", size=13, weight=ft.FontWeight.W_600, color=C_SECONDARY),
-                            ft.Text(word_of_day.get("penjelasan", ""), size=12, color=C_TEXT_LIGHT),
+                            ft.Text(wod_desc, size=12, color=C_TEXT_LIGHT),
+                            *(
+                                [
+                                    ft.Container(
+                                        bgcolor=C_BG_DEEP,
+                                        padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+                                        border_radius=ft.BorderRadius.all(8),
+                                        border=ft.Border.all(1, C_MUTED),
+                                        content=ft.Row(
+                                            spacing=6,
+                                            vertical_alignment=ft.CrossAxisAlignment.START,
+                                            controls=[
+                                                ft.Text("💬", size=11),
+                                                ft.Text(f'"{wod_ex}"', size=11, color=C_SECONDARY, italic=True, expand=True),
+                                            ],
+                                        ),
+                                    )
+                                ]
+                                if wod_ex
+                                else []
+                            ),
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.END,
                                 controls=[
@@ -739,6 +770,7 @@ class MyLifeApp:
             st = item["status"]
             st_color = C_SUCCESS if st == "hafal" else (C_WARNING if st == "belajar" else C_SECONDARY)
             st_badge = "SUDAH HAFAL" if st == "hafal" else ("SEDANG BELAJAR" if st == "belajar" else "BELUM HAFAL")
+            item_desc, item_ex = parse_penjelasan(item["penjelasan"])
 
             word_cards.append(
                 ft.Container(
@@ -785,7 +817,27 @@ class MyLifeApp:
                                 ],
                             ),
                             ft.Text(f"Arti: {item['arti']}", size=13, weight=ft.FontWeight.W_600, color=C_SECONDARY),
-                            ft.Text(item["penjelasan"], size=11, color=C_TEXT_LIGHT),
+                            ft.Text(item_desc, size=11, color=C_TEXT_LIGHT),
+                            *(
+                                [
+                                    ft.Container(
+                                        bgcolor=C_BG_DEEP,
+                                        padding=ft.Padding.symmetric(horizontal=8, vertical=5),
+                                        border_radius=ft.BorderRadius.all(6),
+                                        border=ft.Border.all(1, C_MUTED),
+                                        content=ft.Row(
+                                            spacing=6,
+                                            vertical_alignment=ft.CrossAxisAlignment.START,
+                                            controls=[
+                                                ft.Text("💬", size=10),
+                                                ft.Text(f'"{item_ex}"', size=10, color=C_SECONDARY, italic=True, expand=True),
+                                            ],
+                                        ),
+                                    )
+                                ]
+                                if item_ex
+                                else []
+                            ),
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
@@ -885,18 +937,67 @@ class MyLifeApp:
                 ft.Row(spacing=6, wrap=True, controls=status_chips),
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
-                        ft.Text(f"Menampilkan {start_num}–{end_num} dari {total_matching} kata", size=11, color=C_SECONDARY),
+                        ft.Text(f"Hal {((self.vocab_page_offset // self.vocab_page_size) + 1)}/{max(1, (total_matching + self.vocab_page_size - 1) // self.vocab_page_size)} ({start_num}–{end_num} dari {total_matching} kata)", size=11, color=C_SECONDARY, weight=ft.FontWeight.BOLD),
                         ft.Row(
                             spacing=6,
                             controls=[
-                                ft.Button(content="◀ Prev", bgcolor=C_MUTED, color=C_TEXT_LIGHT, on_click=prev_page),
-                                ft.Button(content="Next ▶", bgcolor=C_PRIMARY, color=C_WHITE, on_click=next_page),
+                                ft.Button(
+                                    content="◀ Prev",
+                                    bgcolor=C_MUTED,
+                                    color=C_TEXT_LIGHT,
+                                    disabled=(self.vocab_page_offset == 0),
+                                    on_click=prev_page,
+                                ),
+                                ft.Button(
+                                    content="Next ▶",
+                                    bgcolor=C_PRIMARY if (self.vocab_page_offset + self.vocab_page_size < total_matching) else C_MUTED,
+                                    color=C_WHITE if (self.vocab_page_offset + self.vocab_page_size < total_matching) else C_TEXT_LIGHT,
+                                    disabled=(self.vocab_page_offset + self.vocab_page_size >= total_matching),
+                                    on_click=next_page,
+                                ),
                             ],
                         ),
                     ],
                 ),
-                ft.ListView(expand=True, spacing=8, controls=word_cards),
+                ft.ListView(
+                    expand=True,
+                    spacing=8,
+                    padding=ft.Padding.only(bottom=30),
+                    controls=[
+                        *word_cards,
+                        ft.Container(
+                            padding=ft.Padding.symmetric(vertical=10),
+                            content=ft.Row(
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Text(f"Hal {((self.vocab_page_offset // self.vocab_page_size) + 1)}/{max(1, (total_matching + self.vocab_page_size - 1) // self.vocab_page_size)}", size=11, color=C_SECONDARY),
+                                    ft.Row(
+                                        spacing=6,
+                                        controls=[
+                                            ft.Button(
+                                                content="◀ Prev",
+                                                bgcolor=C_MUTED,
+                                                color=C_TEXT_LIGHT,
+                                                disabled=(self.vocab_page_offset == 0),
+                                                on_click=prev_page,
+                                            ),
+                                            ft.Button(
+                                                content="Next ▶",
+                                                bgcolor=C_PRIMARY if (self.vocab_page_offset + self.vocab_page_size < total_matching) else C_MUTED,
+                                                color=C_WHITE if (self.vocab_page_offset + self.vocab_page_size < total_matching) else C_TEXT_LIGHT,
+                                                disabled=(self.vocab_page_offset + self.vocab_page_size >= total_matching),
+                                                on_click=next_page,
+                                            ),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                        ),
+                    ],
+                ),
             ],
         )
 
@@ -1313,6 +1414,7 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
+            padding=ft.Padding.only(bottom=30),
             controls=[
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -1497,6 +1599,7 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
+            padding=ft.Padding.only(bottom=30),
             controls=[
                 self.build_period_selector(show_month=True),
                 ft.Container(
@@ -1620,6 +1723,7 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
+            padding=ft.Padding.only(bottom=30),
             controls=[
                 self.build_period_selector(show_month=False),
                 ft.Container(
@@ -1766,6 +1870,112 @@ class MyLifeApp:
                 )
             )
 
+        def open_edit_tx_dialog(tx: dict):
+            tf_date = ft.TextField(
+                label="Tanggal (YYYY-MM-DD)",
+                value=tx["tanggal"],
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
+
+            dd_tipe = ft.Dropdown(
+                label="Tipe Transaksi",
+                value=tx["tipe"],
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+                options=[
+                    ft.dropdown.Option(key="PENDAPATAN", text="PENDAPATAN"),
+                    ft.dropdown.Option(key="KEBUTUHAN", text="KEBUTUHAN (Needs)"),
+                    ft.dropdown.Option(key="KEINGINAN", text="KEINGINAN (Wants)"),
+                    ft.dropdown.Option(key="TABUNGAN & INVESTASI", text="TABUNGAN & INVESTASI"),
+                ],
+            )
+
+            def get_cat_opts(tipe_val: str):
+                filtered = [c["kategori"] for c in all_cats if c["tipe"] == tipe_val]
+                if tx["kategori"] and tx["kategori"] not in filtered:
+                    filtered.append(tx["kategori"])
+                if not filtered:
+                    filtered = ["Umum"]
+                return [ft.dropdown.Option(key=k, text=k) for k in filtered]
+
+            curr_cat_opts = get_cat_opts(tx["tipe"])
+            cat_val = tx["kategori"] if any(o.key == tx["kategori"] for o in curr_cat_opts) else curr_cat_opts[0].key
+
+            dd_kat = ft.Dropdown(
+                label="Kategori (Sesuai SET-UP)",
+                value=cat_val,
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+                options=curr_cat_opts,
+            )
+
+            def on_tipe_change(ev):
+                opts = get_cat_opts(dd_tipe.value)
+                dd_kat.options = opts
+                dd_kat.value = opts[0].key
+                self.page.update()
+
+            dd_tipe.on_select = on_tipe_change
+
+            tf_desc = ft.TextField(
+                label="Deskripsi",
+                value=tx["deskripsi"] or "",
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
+            tf_total = ft.TextField(
+                label="Nominal Rp",
+                value=str(int(round(float(tx["total"])))),
+                keyboard_type=ft.KeyboardType.NUMBER,
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
+            tf_notes = ft.TextField(
+                label="Notes (Opsional)",
+                value=tx["notes"] or "",
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
+
+            def save_updated_tx(ev):
+                try:
+                    nom = float((tf_total.value or "0").replace(".", "").replace(",", "").strip())
+                    if nom <= 0:
+                        raise ValueError()
+                except ValueError:
+                    self.notify("Masukkan nominal Rupiah yang valid!", C_DANGER)
+                    return
+
+                self.db.update_transaction(
+                    tx_id=tx["id"],
+                    tanggal=tf_date.value.strip() or tx["tanggal"],
+                    tipe=dd_tipe.value,
+                    kategori=dd_kat.value or "Umum",
+                    deskripsi=tf_desc.value or dd_kat.value,
+                    total=nom,
+                    notes=tf_notes.value or "",
+                )
+                self.page.pop_dialog()
+                self.notify("Transaksi berhasil diperbarui!", C_SUCCESS)
+                self.render()
+
+            self.page.show_dialog(
+                ft.AlertDialog(
+                    bgcolor=C_CARD_DARK,
+                    title=ft.Text("Edit Transaksi Keuangan", color=C_WHITE, weight=ft.FontWeight.BOLD),
+                    content=ft.Column(
+                        tight=True,
+                        spacing=8,
+                        controls=[tf_date, dd_tipe, dd_kat, tf_desc, tf_total, tf_notes],
+                    ),
+                    actions=[
+                        ft.TextButton(content="Batal", on_click=lambda ev: self.page.pop_dialog()),
+                        ft.Button(content="Simpan Perubahan", bgcolor=C_PRIMARY, color=C_WHITE, on_click=save_updated_tx),
+                    ],
+                )
+            )
+
         def delete_tx(tx_id: int):
             self.db.delete_transaction(tx_id)
             self.notify("Transaksi dihapus.", C_MUTED)
@@ -1784,6 +1994,7 @@ class MyLifeApp:
                     padding=ft.Padding.all(12),
                     border_radius=ft.BorderRadius.all(12),
                     border=ft.Border.all(1, C_MUTED),
+                    on_click=lambda e, t=tx: open_edit_tx_dialog(t),
                     content=ft.Row(
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         controls=[
@@ -1809,13 +2020,21 @@ class MyLifeApp:
                                 ],
                             ),
                             ft.Row(
-                                spacing=4,
+                                spacing=2,
                                 controls=[
                                     ft.Text(f"{sign_str}{format_rp(tx['total'])}", size=13, weight=ft.FontWeight.BOLD, color=amt_color),
+                                    ft.IconButton(
+                                        icon=ft.Icons.EDIT_OUTLINED,
+                                        icon_color=C_SECONDARY,
+                                        icon_size=18,
+                                        tooltip="Edit Transaksi",
+                                        on_click=lambda e, t=tx: open_edit_tx_dialog(t),
+                                    ),
                                     ft.IconButton(
                                         icon=ft.Icons.DELETE_OUTLINE,
                                         icon_color=C_DANGER,
                                         icon_size=18,
+                                        tooltip="Hapus Transaksi",
                                         on_click=lambda e, tid=tx["id"]: delete_tx(tid),
                                     ),
                                 ],
@@ -1845,6 +2064,7 @@ class MyLifeApp:
                 ft.ListView(
                     expand=True,
                     spacing=8,
+                    padding=ft.Padding.only(bottom=30),
                     controls=tx_cards if tx_cards else [
                         ft.Container(
                             bgcolor=C_CARD_DARK,
@@ -1862,23 +2082,202 @@ class MyLifeApp:
         ov = self.db.get_monthly_finance_overview(self.selected_year, self.selected_month)
         rule = ov["rule"]
 
-        used_pct = (ov["total_alokasi"] / ov["pendapatan"] * 100.0) if ov["pendapatan"] > 0 else 0.0
+        income_val = ov["pendapatan"] if ov["pendapatan"] > 0 else ov["target_by_tipe"].get("PENDAPATAN", 0.0)
+        base_income = max(1.0, income_val)
+        used_pct = (ov["total_alokasi"] / base_income * 100.0) if base_income > 0 else 0.0
         remain_pct = max(0.0, 100.0 - used_pct)
+
+        pct_keb_act = (ov["kebutuhan"] / base_income) * 100.0
+        pct_kei_act = (ov["keinginan"] / base_income) * 100.0
+        pct_tab_act = (ov["tabungan"] / base_income) * 100.0
+        pct_rem_act = max(0.0, 100.0 - (pct_keb_act + pct_kei_act + pct_tab_act))
+
+        # Health status indicator
+        if ov["selisih"] < 0:
+            health_color = C_DANGER
+            health_title = "🚨 OVERBUDGET (DEFISIT)"
+            health_desc = f"Pengeluaran melebihi pendapatan sebesar {format_rp(abs(ov['selisih']))}!"
+        elif used_pct >= 90:
+            health_color = C_WARNING
+            health_title = "⚠️ WASPADA BATAS LIMIT"
+            health_desc = f"Budget terpakai {used_pct:.1f}%. Sisa uang bebas menipis ({format_rp(ov['selisih'])})."
+        else:
+            health_color = C_SUCCESS
+            health_title = "✅ KEUANGAN SEHAT & SURPLUS"
+            health_desc = f"Arus kas positif! Sisa dana bebas tersimpan {format_rp(ov['selisih'])} ({remain_pct:.1f}%)."
+
+        # Visual multi-segment stacked bar for cash flow allocation
+        segments = []
+        if pct_keb_act > 0:
+            segments.append(
+                ft.Container(
+                    expand=max(1, int(round(pct_keb_act * 10))),
+                    bgcolor=C_SECONDARY,
+                    height=24,
+                    tooltip=f"Kebutuhan: {pct_keb_act:.1f}% ({format_rp(ov['kebutuhan'])})",
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Text(f"{pct_keb_act:.0f}%", size=10, weight=ft.FontWeight.BOLD, color=C_WHITE) if pct_keb_act >= 7 else None,
+                )
+            )
+        if pct_kei_act > 0:
+            segments.append(
+                ft.Container(
+                    expand=max(1, int(round(pct_kei_act * 10))),
+                    bgcolor=C_WARNING,
+                    height=24,
+                    tooltip=f"Keinginan: {pct_kei_act:.1f}% ({format_rp(ov['keinginan'])})",
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Text(f"{pct_kei_act:.0f}%", size=10, weight=ft.FontWeight.BOLD, color=C_BG_DEEP) if pct_kei_act >= 7 else None,
+                )
+            )
+        if pct_tab_act > 0:
+            segments.append(
+                ft.Container(
+                    expand=max(1, int(round(pct_tab_act * 10))),
+                    bgcolor=C_PRIMARY,
+                    height=24,
+                    tooltip=f"Tabungan: {pct_tab_act:.1f}% ({format_rp(ov['tabungan'])})",
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Text(f"{pct_tab_act:.0f}%", size=10, weight=ft.FontWeight.BOLD, color=C_WHITE) if pct_tab_act >= 7 else None,
+                )
+            )
+        if ov["selisih"] >= 0 and pct_rem_act > 0:
+            segments.append(
+                ft.Container(
+                    expand=max(1, int(round(pct_rem_act * 10))),
+                    bgcolor=C_SUCCESS,
+                    height=24,
+                    tooltip=f"Sisa Bebas: {pct_rem_act:.1f}% ({format_rp(ov['selisih'])})",
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Text(f"{pct_rem_act:.0f}%", size=10, weight=ft.FontWeight.BOLD, color=C_BG_DEEP) if pct_rem_act >= 7 else None,
+                )
+            )
+        elif ov["selisih"] < 0:
+            deficit_pct = (abs(ov["selisih"]) / base_income) * 100.0
+            segments.append(
+                ft.Container(
+                    expand=max(1, int(round(deficit_pct * 10))),
+                    bgcolor=C_DANGER,
+                    height=24,
+                    tooltip=f"Defisit: {deficit_pct:.1f}% ({format_rp(abs(ov['selisih']))})",
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Text(f"Defisit {deficit_pct:.0f}%", size=9, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                )
+            )
+
+        if not segments:
+            segments.append(
+                ft.Container(
+                    expand=True,
+                    bgcolor=C_MUTED,
+                    height=24,
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Text("Belum ada alokasi transaksi", size=10, color=C_TEXT_LIGHT),
+                )
+            )
+
+        # Top 5 Expense Categories ranking
+        all_expenses = []
+        for t_k in ["KEBUTUHAN", "KEINGINAN"]:
+            for item in ov["breakdown_by_tipe"].get(t_k, []):
+                if item["actual"] > 0:
+                    all_expenses.append({
+                        "kategori": item["kategori"],
+                        "tipe": t_k,
+                        "actual": item["actual"],
+                    })
+        all_expenses.sort(key=lambda x: x["actual"], reverse=True)
+        tot_exp_only = sum(x["actual"] for x in all_expenses)
+
+        top_exp_rows = []
+        for rank, exp in enumerate(all_expenses[:5], start=1):
+            exp_pct = (exp["actual"] / tot_exp_only * 100.0) if tot_exp_only > 0 else 0.0
+            bar_color = C_SECONDARY if exp["tipe"] == "KEBUTUHAN" else C_WARNING
+            top_exp_rows.append(
+                ft.Container(
+                    bgcolor=C_BG_DEEP,
+                    padding=ft.Padding.symmetric(horizontal=10, vertical=7),
+                    border_radius=ft.BorderRadius.all(8),
+                    content=ft.Column(
+                        spacing=4,
+                        controls=[
+                            ft.Row(
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                controls=[
+                                    ft.Row(
+                                        spacing=6,
+                                        controls=[
+                                            ft.Container(
+                                                bgcolor=C_MUTED,
+                                                padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+                                                border_radius=ft.BorderRadius.all(4),
+                                                content=ft.Text(f"#{rank}", size=10, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
+                                            ),
+                                            ft.Text(exp["kategori"], size=12, weight=ft.FontWeight.W_600, color=C_WHITE),
+                                            ft.Container(
+                                                bgcolor=C_PRIMARY if exp["tipe"] == "KEBUTUHAN" else C_MUTED,
+                                                padding=ft.Padding.symmetric(horizontal=5, vertical=1),
+                                                border_radius=ft.BorderRadius.all(4),
+                                                content=ft.Text(exp["tipe"], size=8, color=C_WHITE, weight=ft.FontWeight.BOLD),
+                                            ),
+                                        ],
+                                    ),
+                                    ft.Text(f"{format_rp(exp['actual'])} ({exp_pct:.1f}%)", size=11, weight=ft.FontWeight.BOLD, color=bar_color),
+                                ],
+                            ),
+                            ft.ProgressBar(
+                                value=min(1.0, exp_pct / 100.0),
+                                bar_height=5,
+                                color=bar_color,
+                                bgcolor=C_MUTED,
+                                border_radius=ft.BorderRadius.all(3),
+                            ),
+                        ],
+                    ),
+                )
+            )
 
         def build_rule_row(label: str, target_pct: float, actual_pct: float, actual_rp: float, color: str) -> ft.Container:
             over_budget = label in ("KEBUTUHAN", "KEINGINAN") and actual_pct > target_pct
+            diff_rp = (target_pct / 100.0 * base_income) - actual_rp
+            if label in ("KEBUTUHAN", "KEINGINAN"):
+                if diff_rp >= 0:
+                    status_badge = f"Hemat {format_rp(diff_rp)} ✅"
+                    status_col = C_SUCCESS
+                else:
+                    status_badge = f"Over {format_rp(abs(diff_rp))} 🚨"
+                    status_col = C_DANGER
+            else:
+                if actual_rp >= (target_pct / 100.0 * base_income):
+                    status_badge = "Target Tercapai 🌟"
+                    status_col = C_SUCCESS
+                else:
+                    status_badge = f"Kurang {format_rp(abs(diff_rp))} ⏳"
+                    status_col = C_SECONDARY
+
             return ft.Container(
                 bgcolor=C_BG_DEEP,
                 padding=ft.Padding.all(10),
                 border_radius=ft.BorderRadius.all(10),
                 border=ft.Border.all(1, C_DANGER if over_budget else C_MUTED),
                 content=ft.Column(
-                    spacing=4,
+                    spacing=5,
                     controls=[
                         ft.Row(
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                             controls=[
-                                ft.Text(label, size=12, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                ft.Row(
+                                    spacing=6,
+                                    controls=[
+                                        ft.Text(label, size=12, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                        ft.Container(
+                                            bgcolor=C_MUTED,
+                                            padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+                                            border_radius=ft.BorderRadius.all(6),
+                                            content=ft.Text(status_badge, size=9, weight=ft.FontWeight.BOLD, color=status_col),
+                                        ),
+                                    ],
+                                ),
                                 ft.Text(
                                     f"Target: {target_pct:.0f}% | Aktual: {actual_pct:.1f}% ({format_rp(actual_rp)})",
                                     size=11,
@@ -1892,12 +2291,13 @@ class MyLifeApp:
                             bar_height=7,
                             color=C_DANGER if over_budget else color,
                             bgcolor=C_MUTED,
+                            border_radius=ft.BorderRadius.all(4),
                         ),
                     ],
                 ),
             )
 
-        # Build category breakdown cards (TARGET vs AKTUAL per kategori seperti di sheet OVERVIEW BULANAN)
+        # Build category breakdown cards (TARGET vs AKTUAL per kategori)
         cat_sections = []
         for tipe_key in ["PENDAPATAN", "KEBUTUHAN", "KEINGINAN", "TABUNGAN & INVESTASI"]:
             items = ov["breakdown_by_tipe"].get(tipe_key, [])
@@ -1927,6 +2327,7 @@ class MyLifeApp:
                                     bar_height=5,
                                     color=C_PRIMARY if act <= tgt or tipe_key in ("PENDAPATAN", "TABUNGAN & INVESTASI") else C_DANGER,
                                     bgcolor=C_MUTED,
+                                    border_radius=ft.BorderRadius.all(3),
                                 ),
                             ],
                         ),
@@ -1957,8 +2358,117 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
+            padding=ft.Padding.only(bottom=30),
             controls=[
                 self.build_period_selector(show_month=True),
+
+                # VISUALISASI ARUS KAS & ALOKASI UANG
+                ft.Container(
+                    bgcolor=C_CARD_DARK,
+                    padding=ft.Padding.all(14),
+                    border_radius=ft.BorderRadius.all(14),
+                    border=ft.Border.all(1, C_SECONDARY),
+                    content=ft.Column(
+                        spacing=10,
+                        controls=[
+                            ft.Row(
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                controls=[
+                                    ft.Row(
+                                        spacing=6,
+                                        controls=[
+                                            ft.Icon(ft.Icons.DONUT_LARGE_ROUNDED, color=C_SECONDARY, size=18),
+                                            ft.Text("VISUALISASI ALOKASI UANG", size=13, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                        ],
+                                    ),
+                                    ft.Container(
+                                        bgcolor=C_MUTED,
+                                        padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                                        border_radius=ft.BorderRadius.all(6),
+                                        content=ft.Text(f"Basis In: {format_rp(base_income)}", size=10, color=C_SUCCESS, weight=ft.FontWeight.BOLD),
+                                    ),
+                                ],
+                            ),
+
+                            # Proportional Stacked Segment Bar
+                            ft.Container(
+                                border_radius=ft.BorderRadius.all(12),
+                                clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                                border=ft.Border.all(1, C_MUTED),
+                                content=ft.Row(
+                                    spacing=2,
+                                    controls=segments,
+                                ),
+                            ),
+
+                            # Color Legend Chips
+                            ft.Row(
+                                wrap=True,
+                                spacing=8,
+                                controls=[
+                                    ft.Row(spacing=4, controls=[ft.Container(width=10, height=10, bgcolor=C_SECONDARY, border_radius=ft.BorderRadius.all(3)), ft.Text(f"Kebutuhan: {format_rp(ov['kebutuhan'])} ({pct_keb_act:.1f}%)", size=10, color=C_TEXT_LIGHT)]),
+                                    ft.Row(spacing=4, controls=[ft.Container(width=10, height=10, bgcolor=C_WARNING, border_radius=ft.BorderRadius.all(3)), ft.Text(f"Keinginan: {format_rp(ov['keinginan'])} ({pct_kei_act:.1f}%)", size=10, color=C_TEXT_LIGHT)]),
+                                    ft.Row(spacing=4, controls=[ft.Container(width=10, height=10, bgcolor=C_PRIMARY, border_radius=ft.BorderRadius.all(3)), ft.Text(f"Tabungan: {format_rp(ov['tabungan'])} ({pct_tab_act:.1f}%)", size=10, color=C_TEXT_LIGHT)]),
+                                    ft.Row(spacing=4, controls=[ft.Container(width=10, height=10, bgcolor=C_SUCCESS if ov['selisih'] >= 0 else C_DANGER, border_radius=ft.BorderRadius.all(3)), ft.Text(f"Sisa Bebas: {format_rp(ov['selisih'])} ({remain_pct:.1f}%)", size=10, color=C_SUCCESS if ov['selisih'] >= 0 else C_DANGER, weight=ft.FontWeight.BOLD)]),
+                                ],
+                            ),
+
+                            ft.Divider(color=C_MUTED, height=1),
+
+                            # Circular Health Meter & Status
+                            ft.Row(
+                                spacing=12,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Stack(
+                                        alignment=ft.Alignment.CENTER,
+                                        controls=[
+                                            ft.ProgressRing(
+                                                value=1.0,
+                                                color=C_MUTED,
+                                                stroke_width=9,
+                                                width=84,
+                                                height=84,
+                                            ),
+                                            ft.ProgressRing(
+                                                value=min(1.0, used_pct / 100.0),
+                                                color=health_color,
+                                                stroke_width=9,
+                                                width=84,
+                                                height=84,
+                                            ),
+                                            ft.Column(
+                                                alignment=ft.MainAxisAlignment.CENTER,
+                                                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                                spacing=0,
+                                                controls=[
+                                                    ft.Text(f"{used_pct:.0f}%", size=15, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                                    ft.Text("Terpakai", size=9, color=C_TEXT_LIGHT),
+                                                ],
+                                            ),
+                                        ],
+                                    ),
+                                    ft.Column(
+                                        expand=True,
+                                        spacing=3,
+                                        controls=[
+                                            ft.Container(
+                                                bgcolor=C_BG_DEEP,
+                                                padding=ft.Padding.symmetric(horizontal=8, vertical=3),
+                                                border_radius=ft.BorderRadius.all(6),
+                                                border=ft.Border.all(1, health_color),
+                                                content=ft.Text(health_title, size=11, weight=ft.FontWeight.BOLD, color=health_color),
+                                            ),
+                                            ft.Text(health_desc, size=11, color=C_TEXT_LIGHT),
+                                            ft.Text(f"Sisa Saldo: {format_rp(ov['selisih'])}", size=12, weight=ft.FontWeight.BOLD, color=health_color),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                ),
+
                 # Cash Flow Summary Card
                 ft.Container(
                     bgcolor=C_CARD_DARK,
@@ -1985,10 +2495,37 @@ class MyLifeApp:
                                 ],
                             ),
                             ft.Text(f"Sisa Untuk Pengeluaran: {remain_pct:.1f}% ({format_rp(ov['selisih'])}) | Terpakai: {used_pct:.1f}%", size=11, color=C_TEXT_LIGHT),
-                            ft.ProgressBar(value=min(1.0, used_pct / 100.0), bar_height=8, color=C_PRIMARY, bgcolor=C_MUTED),
+                            ft.ProgressBar(value=min(1.0, used_pct / 100.0), bar_height=8, color=C_PRIMARY, bgcolor=C_MUTED, border_radius=ft.BorderRadius.all(4)),
                         ],
                     ),
                 ),
+
+                # Top 5 Expense Categories (if any expenses exist)
+                *(
+                    [
+                        ft.Container(
+                            bgcolor=C_CARD_DARK,
+                            padding=ft.Padding.all(14),
+                            border_radius=ft.BorderRadius.all(14),
+                            content=ft.Column(
+                                spacing=6,
+                                controls=[
+                                    ft.Row(
+                                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                        controls=[
+                                            ft.Text("🏆 TOP PENGELUARAN TERBESAR BULAN INI", size=13, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
+                                            ft.Text(f"Total: {format_rp(tot_exp_only)}", size=11, color=C_SECONDARY),
+                                        ],
+                                    ),
+                                    ft.Column(spacing=4, controls=top_exp_rows),
+                                ],
+                            ),
+                        )
+                    ]
+                    if top_exp_rows
+                    else []
+                ),
+
                 # Breakdown Persentase 50/30/20
                 ft.Container(
                     bgcolor=C_CARD_DARK,
@@ -2004,6 +2541,7 @@ class MyLifeApp:
                         ],
                     ),
                 ),
+
                 *cat_sections,
             ],
         )
@@ -2048,6 +2586,7 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
+            padding=ft.Padding.only(bottom=30),
             controls=[
                 self.build_period_selector(show_month=False),
                 ft.Container(
@@ -2177,6 +2716,66 @@ class MyLifeApp:
             )
 
         grouped_ui = []
+        def open_edit_cat_dialog(c: dict):
+            dd_t = ft.Dropdown(
+                label="Tipe Kategori",
+                value=c["tipe"],
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+                options=[
+                    ft.dropdown.Option(key="PENDAPATAN", text="PENDAPATAN"),
+                    ft.dropdown.Option(key="KEBUTUHAN", text="KEBUTUHAN"),
+                    ft.dropdown.Option(key="KEINGINAN", text="KEINGINAN"),
+                    ft.dropdown.Option(key="TABUNGAN & INVESTASI", text="TABUNGAN & INVESTASI"),
+                ],
+            )
+            tf_k = ft.TextField(
+                label="Nama Kategori (misal: Gaji Pokok)",
+                value=c["kategori"],
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
+            tf_jt = ft.TextField(
+                label="Tanggal Jatuh Tempo (1-31, opsional)",
+                value=str(c["jatuh_tempo"]) if c.get("jatuh_tempo") else "",
+                keyboard_type=ft.KeyboardType.NUMBER,
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
+            tf_tg = ft.TextField(
+                label="Target / Nominal Bulanan (Rp)",
+                value=str(int(round(float(c["target"] or 0)))),
+                keyboard_type=ft.KeyboardType.NUMBER,
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
+
+            def save_edited_c(ev):
+                if not tf_k.value.strip():
+                    self.notify("Nama kategori wajib diisi!", C_DANGER)
+                    return
+                jt_val = int(tf_jt.value) if (tf_jt.value and tf_jt.value.strip().isdigit()) else None
+                try:
+                    tg_val = float((tf_tg.value or "0").replace(".", "").replace(",", "").strip())
+                except ValueError:
+                    tg_val = 0.0
+                self.db.save_finance_category(dd_t.value, tf_k.value, jt_val, tg_val, cat_id=c["id"])
+                self.page.pop_dialog()
+                self.notify(f"Kategori '{tf_k.value}' berhasil diperbarui!", C_SUCCESS)
+                self.render()
+
+            self.page.show_dialog(
+                ft.AlertDialog(
+                    bgcolor=C_CARD_DARK,
+                    title=ft.Text(f"Edit {c['kategori']}", color=C_WHITE, weight=ft.FontWeight.BOLD),
+                    content=ft.Column(tight=True, spacing=8, controls=[dd_t, tf_k, tf_jt, tf_tg]),
+                    actions=[
+                        ft.TextButton(content="Batal", on_click=lambda ev: self.page.pop_dialog()),
+                        ft.Button(content="Simpan Perubahan", bgcolor=C_PRIMARY, color=C_WHITE, on_click=save_edited_c),
+                    ],
+                )
+            )
+
         for t_name in ["PENDAPATAN", "KEBUTUHAN", "KEINGINAN", "TABUNGAN & INVESTASI"]:
             t_cats = [c for c in cats if c["tipe"] == t_name]
             tot_t = sum(c["target"] or 0 for c in t_cats)
@@ -2188,18 +2787,27 @@ class MyLifeApp:
                         bgcolor=C_BG_DEEP,
                         padding=ft.Padding.symmetric(horizontal=10, vertical=6),
                         border_radius=ft.BorderRadius.all(8),
+                        on_click=lambda e, cat_item=c: open_edit_cat_dialog(cat_item),
                         content=ft.Row(
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                             controls=[
                                 ft.Text(f"{c['kategori']}{jt_str}", size=12, color=C_WHITE),
                                 ft.Row(
-                                    spacing=6,
+                                    spacing=2,
                                     controls=[
                                         ft.Text(format_rp(c["target"]), size=12, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
                                         ft.IconButton(
+                                            icon=ft.Icons.EDIT_OUTLINED,
+                                            icon_color=C_SECONDARY,
+                                            icon_size=18,
+                                            tooltip="Edit Budget / Kategori",
+                                            on_click=lambda e, cat_item=c: open_edit_cat_dialog(cat_item),
+                                        ),
+                                        ft.IconButton(
                                             icon=ft.Icons.DELETE_OUTLINE,
                                             icon_color=C_DANGER,
-                                            icon_size=16,
+                                            icon_size=18,
+                                            tooltip="Hapus Kategori",
                                             on_click=lambda e, cid=c["id"]: (self.db.delete_finance_category(cid), self.render()),
                                         ),
                                     ],
@@ -2233,6 +2841,7 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
+            padding=ft.Padding.only(bottom=30),
             controls=[
                 ft.Container(
                     bgcolor=C_CARD_DARK,
@@ -2411,6 +3020,7 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
+            padding=ft.Padding.only(bottom=30),
             controls=[
                 ft.Container(
                     bgcolor=C_CARD_DARK,
@@ -2564,6 +3174,7 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
+            padding=ft.Padding.only(bottom=30),
             controls=[
                 ft.Container(
                     bgcolor=C_CARD_DARK,
