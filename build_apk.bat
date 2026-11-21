@@ -10,6 +10,6 @@ echo Memulai proses kompilasi Python ke Android APK...
 echo Catatan: Pastikan Android SDK sudah terinstal untuk build lokal,
 echo atau gunakan GitHub Actions (.github/workflows/build_apk.yml) untuk build otomatis di cloud.
 echo.
-flet build apk --verbose
+flet build apk --yes --verbose
 pause
 
