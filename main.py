@@ -1,8 +1,10 @@
 import os
+import re
 import random
 import datetime
 import flet as ft
 from database import DatabaseManager
+from books_calendar_ui import BooksCalendarMixin
 from excel_exporter import generate_oxford_excel, export_full_app_report
 
 # =============================================================================
@@ -27,6 +29,11 @@ MONTH_NAMES_ID = [
     "Juli", "Agustus", "September", "Oktober", "November", "Desember"
 ]
 
+MONTH_SHORT_ID = [
+    "", "Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
+    "Jul", "Agu", "Sep", "Okt", "Nov", "Des"
+]
+
 
 def format_rp(amount: float) -> str:
     try:
@@ -37,17 +44,57 @@ def format_rp(amount: float) -> str:
         return "Rp 0"
 
 
+def format_rp_compact(amount: float) -> str:
+    try:
+        val = float(amount)
+        sign = "-" if val < 0 else ""
+        aval = abs(val)
+        if aval >= 1_000_000_000:
+            return f"{sign}Rp {aval / 1_000_000_000:.1f}M"
+        if aval >= 1_000_000:
+            return f"{sign}Rp {aval / 1_000_000:.1f}Jt"
+        if aval >= 1_000:
+            return f"{sign}Rp {aval / 1_000:.0f}Rb"
+        return f"{sign}Rp {int(aval)}"
+    except Exception:
+        return "Rp 0"
+
+
 def parse_penjelasan(penjelasan: str):
     if not penjelasan:
         return "", ""
-    import re
-    parts = re.split(r'\bcontoh(?:\s+kalimat)?\s*:\s*', str(penjelasan), flags=re.IGNORECASE)
+    parts = re.split(r"\bcontoh(?:\s+kalimat)?\s*:\s*", str(penjelasan), flags=re.IGNORECASE)
     desc = parts[0].strip()
     example = parts[1].strip().strip("'\"") if len(parts) > 1 else ""
     return desc, example
 
 
-class MyLifeApp:
+def card_shadow(blur: int = 14, color: str = "#070510") -> ft.BoxShadow:
+    return ft.BoxShadow(
+        spread_radius=0,
+        blur_radius=blur,
+        color=color,
+        offset=ft.Offset(0, 4),
+    )
+
+
+def hero_gradient() -> ft.LinearGradient:
+    return ft.LinearGradient(
+        begin=ft.Alignment.TOP_LEFT,
+        end=ft.Alignment.BOTTOM_RIGHT,
+        colors=[C_PRIMARY, C_CARD_DARK],
+    )
+
+
+def dark_card_gradient() -> ft.LinearGradient:
+    return ft.LinearGradient(
+        begin=ft.Alignment.TOP_LEFT,
+        end=ft.Alignment.BOTTOM_RIGHT,
+        colors=[C_CARD_DARK, "#1B1336"],
+    )
+
+
+class MyLifeApp(BooksCalendarMixin):
     def __init__(self, page: ft.Page):
         self.page = page
         self.db = DatabaseManager()
@@ -66,6 +113,7 @@ class MyLifeApp:
         self.vocab_fav_only = False
         self.vocab_page_offset = 0
         self.vocab_page_size = 25
+        self.vocab_results_host = ft.Container(expand=True)
 
         # State Flashcard
         self.flashcard_list = []
@@ -81,15 +129,23 @@ class MyLifeApp:
         self.quiz_current_idx = 0
         self.quiz_correct_count = 0
         self.quiz_answered = False
-        self.quiz_feedback_text = ""
+        self.quiz_selected_opt_id = None
+        self.quiz_is_last_correct = False
+        self.quiz_feedback_title = ""
+        self.quiz_feedback_desc = ""
+        self.quiz_feedback_ex = ""
         self.quiz_feedback_color = C_SECONDARY
         self.quiz_active = False
+
+        # State Filter Transaksi Keuangan
+        self.tx_tipe_filter = "SEMUA"
 
         # State Bulan & Tahun untuk Tracker & Keuangan
         today = datetime.date.today()
         self.selected_year = today.year
         self.selected_month = today.month
 
+        self._init_books_calendar_state()
         self.setup_page()
         self.render()
 
@@ -107,7 +163,7 @@ class MyLifeApp:
         self.body_container = ft.Container(
             expand=True,
             bgcolor=C_BG_DEEP,
-            padding=ft.Padding.only(left=12, right=12, top=6, bottom=8),
+            padding=ft.Padding.only(left=12, right=12, top=8, bottom=4),
         )
 
         self.nav_bar = ft.NavigationBar(
@@ -141,13 +197,29 @@ class MyLifeApp:
                     selected_icon=ft.Icons.TUNE_ROUNDED,
                     label="Set-Up",
                 ),
+                ft.NavigationBarDestination(
+                    icon=ft.Icons.AUTO_STORIES_OUTLINED,
+                    selected_icon=ft.Icons.AUTO_STORIES_ROUNDED,
+                    label="Buku",
+                ),
+                ft.NavigationBarDestination(
+                    icon=ft.Icons.CALENDAR_MONTH_OUTLINED,
+                    selected_icon=ft.Icons.CALENDAR_MONTH_ROUNDED,
+                    label="Kalender",
+                ),
             ],
         )
 
         self.header_bar = ft.Container(
-            bgcolor=C_CARD_DARK,
-            padding=ft.Padding.symmetric(horizontal=16, vertical=10),
-            border=ft.Border.only(bottom=ft.border.BorderSide(1, C_MUTED) if hasattr(ft.border, "BorderSide") else None),
+            gradient=ft.LinearGradient(
+                begin=ft.Alignment.CENTER_LEFT,
+                end=ft.Alignment.CENTER_RIGHT,
+                colors=[C_CARD_DARK, "#1F153C"],
+            ),
+            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+            border=ft.Border.only(
+                bottom=ft.border.BorderSide(1, C_MUTED) if hasattr(ft.border, "BorderSide") else None
+            ),
             content=ft.Row(
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -156,32 +228,52 @@ class MyLifeApp:
                         spacing=10,
                         controls=[
                             ft.Container(
-                                width=34,
-                                height=34,
-                                border_radius=ft.BorderRadius.all(10),
-                                bgcolor=C_PRIMARY,
+                                width=38,
+                                height=38,
+                                border_radius=ft.BorderRadius.all(11),
+                                gradient=hero_gradient(),
+                                border=ft.Border.all(1, C_SECONDARY),
                                 alignment=ft.Alignment.CENTER,
-                                content=ft.Icon(ft.Icons.AUTO_AWESOME, color=C_TEXT_LIGHT, size=18),
+                                content=ft.Icon(ft.Icons.AUTO_AWESOME, color=C_WHITE, size=19),
                             ),
                             ft.Column(
                                 spacing=1,
                                 controls=[
-                                    ft.Text("MyLife Vocab & Finance", size=15, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
-                                    ft.Text("Oxford 5000™ & 50/30/20 Budget", size=11, color=C_SECONDARY),
+                                    ft.Text(
+                                        "MyLife Vocab & Finance",
+                                        size=15,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=C_WHITE,
+                                    ),
+                                    ft.Text(
+                                        "Oxford 5000™ • 50/30/20 Smart Budget",
+                                        size=10.5,
+                                        color=C_SECONDARY,
+                                    ),
                                 ],
                             ),
                         ],
                     ),
-                    ft.IconButton(
-                        icon=ft.Icons.FILE_DOWNLOAD_OUTLINED,
-                        icon_color=C_TEXT_LIGHT,
-                        bgcolor=C_MUTED,
-                        tooltip="Ekspor Laporan Excel",
+                    ft.Container(
+                        bgcolor=C_PRIMARY,
+                        border_radius=ft.BorderRadius.all(10),
+                        border=ft.Border.all(1, C_SECONDARY),
+                        padding=ft.Padding.symmetric(horizontal=10, vertical=6),
                         on_click=self.export_all_to_excel,
+                        tooltip="Ekspor Excel Kosakata & Laporan Keuangan",
+                        content=ft.Row(
+                            spacing=4,
+                            controls=[
+                                ft.Icon(ft.Icons.FILE_DOWNLOAD_OUTLINED, color=C_WHITE, size=15),
+                                ft.Text("Excel", size=11, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                            ],
+                        ),
                     ),
                 ],
             ),
         )
+
+        self.page.navigation_bar = self.nav_bar
 
         self.page.add(
             ft.Column(
@@ -190,7 +282,6 @@ class MyLifeApp:
                 controls=[
                     self.header_bar,
                     self.body_container,
-                    self.nav_bar,
                 ],
             )
         )
@@ -205,6 +296,8 @@ class MyLifeApp:
 
     def on_main_nav_change(self, e):
         self.main_tab_index = int(e.control.selected_index)
+        if self.main_tab_index == 1 and self.vocab_subtab == 1:
+            self.flashcard_list = []
         self.render()
 
     def build_subtab_bar(self, labels: list, active_idx: int, on_click_fn) -> ft.Container:
@@ -214,26 +307,30 @@ class MyLifeApp:
             pills.append(
                 ft.Container(
                     expand=True,
-                    bgcolor=C_PRIMARY if is_active else C_MUTED,
-                    padding=ft.Padding.symmetric(horizontal=10, vertical=9),
+                    bgcolor=C_PRIMARY if is_active else C_BG_DEEP,
+                    padding=ft.Padding.symmetric(horizontal=8, vertical=8),
                     border_radius=ft.BorderRadius.all(10),
+                    border=ft.Border.all(1, C_SECONDARY if is_active else C_MUTED),
                     alignment=ft.Alignment.CENTER,
                     on_click=lambda e, i=idx: on_click_fn(i),
                     content=ft.Text(
                         text,
-                        size=12,
-                        weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.NORMAL,
+                        size=11.5,
+                        weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.W_500,
                         color=C_WHITE if is_active else C_TEXT_LIGHT,
                         text_align=ft.TextAlign.CENTER,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS,
                     ),
                 )
             )
         return ft.Container(
             bgcolor=C_CARD_DARK,
-            padding=ft.Padding.all(6),
-            border_radius=ft.BorderRadius.all(12),
-            margin=ft.Margin.only(bottom=10),
-            content=ft.Row(spacing=6, controls=pills),
+            padding=ft.Padding.all(5),
+            border_radius=ft.BorderRadius.all(13),
+            border=ft.Border.all(1, C_MUTED),
+            margin=ft.Margin.only(bottom=8),
+            content=ft.Row(spacing=5, controls=pills),
         )
 
     def build_period_selector(self, show_month: bool = True, on_change_callback=None) -> ft.Container:
@@ -265,11 +362,13 @@ class MyLifeApp:
             controls.append(
                 ft.Dropdown(
                     value=str(self.selected_month),
-                    width=122,
+                    expand=3,
                     dense=True,
                     color=C_WHITE,
                     bgcolor=C_MUTED,
-                    content_padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                    border_color=C_SECONDARY,
+                    border_radius=ft.BorderRadius.all(8),
+                    content_padding=ft.Padding.symmetric(horizontal=10, vertical=4),
                     text_size=12,
                     options=[ft.dropdown.Option(key=k, text=t) for k, t in months],
                     on_select=on_month_select,
@@ -279,11 +378,13 @@ class MyLifeApp:
         controls.append(
             ft.Dropdown(
                 value=str(self.selected_year),
-                width=86 if show_month else 120,
+                expand=2 if show_month else True,
                 dense=True,
                 color=C_WHITE,
                 bgcolor=C_MUTED,
-                content_padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                border_color=C_SECONDARY,
+                border_radius=ft.BorderRadius.all(8),
+                content_padding=ft.Padding.symmetric(horizontal=10, vertical=4),
                 text_size=12,
                 options=[ft.dropdown.Option(key=y, text=y) for y in years],
                 on_select=on_year_select,
@@ -294,18 +395,25 @@ class MyLifeApp:
             bgcolor=C_CARD_DARK,
             padding=ft.Padding.symmetric(horizontal=12, vertical=8),
             border_radius=ft.BorderRadius.all(12),
+            border=ft.Border.all(1, C_MUTED),
             content=ft.Row(
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=8,
                 controls=[
                     ft.Row(
-                        spacing=6,
+                        spacing=5,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            ft.Icon(ft.Icons.CALENDAR_MONTH, color=C_SECONDARY, size=18),
-                            ft.Text("Periode:", size=13, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
+                            ft.Icon(ft.Icons.CALENDAR_MONTH_ROUNDED, color=C_SECONDARY, size=17),
+                            ft.Text("Periode:", size=12, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
                         ],
                     ),
-                    ft.Row(spacing=8, controls=controls),
+                    ft.Row(
+                        spacing=6,
+                        expand=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=controls,
+                    ),
                 ],
             ),
         )
@@ -321,6 +429,10 @@ class MyLifeApp:
             self.body_container.content = self.build_finance_view()
         elif self.main_tab_index == 4:
             self.body_container.content = self.build_setup_view()
+        elif self.main_tab_index == 5:
+            self.body_container.content = self.build_books_view()
+        elif self.main_tab_index == 6:
+            self.body_container.content = self.build_calendar_view()
         self.page.update()
 
     # =========================================================================
@@ -335,19 +447,23 @@ class MyLifeApp:
 
         # Pilih 1 Kata Hari Ini secara deterministik per tanggal
         today_ordinal = datetime.date.today().toordinal()
-        rows, total_cnt = self.db.query_vocab(limit=1, offset=(today_ordinal % max(1, v_sum["total"])))
+        rows, _ = self.db.query_vocab(limit=1, offset=(today_ordinal % max(1, v_sum["total"])))
         word_of_day = rows[0] if rows else {
             "id": 1,
             "word": "Abolish",
             "pos_level": "v. C1",
             "arti": "Menghapuskan, mengakhiri secara resmi",
-            "penjelasan": "Menghentikan berlakunya suatu hukum atau sistem secara resmi.",
+            "penjelasan": "Menghentikan berlakunya suatu hukum atau sistem secara resmi. Contoh: 'They voted to abolish the old tax.'",
             "status": "belum",
         }
 
         def quick_memorize_wod(e):
-            self.db.update_vocab_status(word_of_day["id"], "hafal")
-            self.notify(f"Kata '{word_of_day['word']}' ditandai SUDAH HAFAL!", C_PRIMARY)
+            new_st = "belum" if word_of_day.get("status") == "hafal" else "hafal"
+            self.db.update_vocab_status(word_of_day["id"], new_st)
+            if new_st == "hafal":
+                self.notify(f"Kata '{word_of_day['word']}' ditandai SUDAH HAFAL ✅", C_PRIMARY)
+            else:
+                self.notify(f"Status '{word_of_day['word']}' di-reset ke Belum Hafal", C_MUTED)
             self.render()
 
         wod_desc, wod_ex = parse_penjelasan(word_of_day.get("penjelasan", ""))
@@ -355,26 +471,46 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=12,
-            padding=ft.Padding.only(bottom=30),
+            padding=ft.Padding.only(bottom=24),
             controls=[
-                # Banner Sambutan
+                # Hero Banner Sambutan
                 ft.Container(
-                    bgcolor=C_PRIMARY,
+                    gradient=hero_gradient(),
                     padding=ft.Padding.all(16),
-                    border_radius=ft.BorderRadius.all(14),
+                    border_radius=ft.BorderRadius.all(16),
+                    border=ft.Border.all(1, C_SECONDARY),
+                    shadow=card_shadow(),
                     content=ft.Column(
-                        spacing=6,
+                        spacing=8,
                         controls=[
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                 controls=[
-                                    ft.Text("Selamat Datang di MyLife!", size=17, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                    ft.Column(
+                                        spacing=2,
+                                        expand=True,
+                                        controls=[
+                                            ft.Text(
+                                                "Selamat Datang di MyLife ✨",
+                                                size=17,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=C_WHITE,
+                                            ),
+                                            ft.Text(
+                                                "Kuasai 2.000 kosakata Oxford 5000™ & kelola budget 50/30/20 Anda.",
+                                                size=11.5,
+                                                color=C_TEXT_LIGHT,
+                                            ),
+                                        ],
+                                    ),
                                     ft.Container(
-                                        bgcolor=C_CARD_DARK,
-                                        padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+                                        bgcolor=C_BG_DEEP,
+                                        padding=ft.Padding.symmetric(horizontal=10, vertical=5),
                                         border_radius=ft.BorderRadius.all(20),
+                                        border=ft.Border.all(1, C_SECONDARY),
                                         content=ft.Text(
-                                            f"{MONTH_NAMES_ID[self.selected_month]} {self.selected_year}",
+                                            f"{MONTH_SHORT_ID[self.selected_month]} {self.selected_year}",
                                             size=11,
                                             color=C_TEXT_LIGHT,
                                             weight=ft.FontWeight.BOLD,
@@ -382,35 +518,55 @@ class MyLifeApp:
                                     ),
                                 ],
                             ),
-                            ft.Text(
-                                "Kuasai 2.000 kosakata American Oxford 5000™ & kelola keuangan 50/30/20 Anda setiap hari.",
-                                size=12,
-                                color=C_TEXT_LIGHT,
-                            ),
                         ],
                     ),
                 ),
 
-                # Ringkasan Kosakata Card
+                # Ringkasan Kosakata Card (2x2 Grid agar tidak sempit di HP)
                 ft.Container(
-                    bgcolor=C_CARD_DARK,
+                    gradient=dark_card_gradient(),
                     padding=ft.Padding.all(14),
-                    border_radius=ft.BorderRadius.all(14),
+                    border_radius=ft.BorderRadius.all(15),
                     border=ft.Border.all(1, C_MUTED),
+                    shadow=card_shadow(),
                     content=ft.Column(
                         spacing=10,
                         controls=[
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                 controls=[
                                     ft.Row(
                                         spacing=8,
                                         controls=[
-                                            ft.Icon(ft.Icons.SCHOOL_ROUNDED, color=C_SECONDARY, size=20),
-                                            ft.Text("Progres Hafalan Oxford 5000", size=14, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
+                                            ft.Container(
+                                                width=28,
+                                                height=28,
+                                                bgcolor=C_PRIMARY,
+                                                border_radius=ft.BorderRadius.all(8),
+                                                alignment=ft.Alignment.CENTER,
+                                                content=ft.Icon(ft.Icons.SCHOOL_ROUNDED, color=C_WHITE, size=16),
+                                            ),
+                                            ft.Text(
+                                                "Progres Hafalan Oxford 5000",
+                                                size=13.5,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=C_WHITE,
+                                            ),
                                         ],
                                     ),
-                                    ft.Text(f"{v_sum['hafal']} / {v_sum['total']} Kata ({pct_vocab:.1f}%)", size=12, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
+                                    ft.Container(
+                                        bgcolor=C_BG_DEEP,
+                                        padding=ft.Padding.symmetric(horizontal=8, vertical=3),
+                                        border_radius=ft.BorderRadius.all(8),
+                                        border=ft.Border.all(1, C_SECONDARY),
+                                        content=ft.Text(
+                                            f"{v_sum['hafal']}/{v_sum['total']} ({pct_vocab:.1f}%)",
+                                            size=11,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=C_SECONDARY,
+                                        ),
+                                    ),
                                 ],
                             ),
                             ft.ProgressBar(
@@ -423,26 +579,31 @@ class MyLifeApp:
                             ft.Row(
                                 spacing=8,
                                 controls=[
-                                    self._stat_mini_box("Sudah Hafal", str(v_sum["hafal"]), C_SUCCESS),
-                                    self._stat_mini_box("Sedang Belajar", str(v_sum["belajar"]), C_WARNING),
-                                    self._stat_mini_box("Hafal Hari Ini", str(v_sum["today_memorized"]), C_SECONDARY),
-                                    self._stat_mini_box("Skor Tebakan", f"{v_sum['avg_quiz_score']}%", C_TEXT_LIGHT),
+                                    self._stat_mini_box("Sudah Hafal", f"{v_sum['hafal']} Kata", C_SUCCESS, ft.Icons.CHECK_CIRCLE_OUTLINE),
+                                    self._stat_mini_box("Sedang Belajar", f"{v_sum['belajar']} Kata", C_WARNING, ft.Icons.BOOKMARK_BORDER),
+                                ],
+                            ),
+                            ft.Row(
+                                spacing=8,
+                                controls=[
+                                    self._stat_mini_box("Hafal Hari Ini", f"+{v_sum['today_memorized']} Kata", C_SECONDARY, ft.Icons.TODAY_ROUNDED),
+                                    self._stat_mini_box("Rata2 Skor Kuis", f"{v_sum['avg_quiz_score']}%", C_TEXT_LIGHT, ft.Icons.EMOJI_EVENTS_OUTLINED),
                                 ],
                             ),
                             ft.Row(
                                 spacing=8,
                                 controls=[
                                     ft.Button(
-                                        content="Mulai Hafalan",
-                                        icon=ft.Icons.MENU_BOOK,
+                                        content="Daftar Kosakata",
+                                        icon=ft.Icons.MENU_BOOK_ROUNDED,
                                         bgcolor=C_PRIMARY,
                                         color=C_WHITE,
                                         expand=True,
                                         on_click=lambda e: self._jump_to(1, 0),
                                     ),
                                     ft.Button(
-                                        content="Tebakan / Quiz",
-                                        icon=ft.Icons.QUIZ,
+                                        content="Latihan Tebakan",
+                                        icon=ft.Icons.QUIZ_ROUNDED,
                                         bgcolor=C_MUTED,
                                         color=C_TEXT_LIGHT,
                                         expand=True,
@@ -456,33 +617,47 @@ class MyLifeApp:
 
                 # Word of the Day Card
                 ft.Container(
-                    bgcolor=C_CARD_DARK,
+                    gradient=dark_card_gradient(),
                     padding=ft.Padding.all(14),
-                    border_radius=ft.BorderRadius.all(14),
+                    border_radius=ft.BorderRadius.all(15),
                     border=ft.Border.all(1, C_PRIMARY),
+                    shadow=card_shadow(),
                     content=ft.Column(
-                        spacing=6,
+                        spacing=8,
                         controls=[
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
-                                    ft.Text("✨ KATA PILIHAN HARI INI", size=11, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
+                                    ft.Row(
+                                        spacing=6,
+                                        controls=[
+                                            ft.Icon(ft.Icons.LIGHTBULB_ROUNDED, color=C_WARNING, size=16),
+                                            ft.Text("KATA PILIHAN HARI INI", size=11, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
+                                        ],
+                                    ),
                                     ft.Container(
-                                        bgcolor=C_MUTED,
+                                        bgcolor=C_PRIMARY,
                                         padding=ft.Padding.symmetric(horizontal=8, vertical=2),
                                         border_radius=ft.BorderRadius.all(6),
-                                        content=ft.Text(word_of_day.get("pos_level", ""), size=11, color=C_TEXT_LIGHT),
+                                        content=ft.Text(word_of_day.get("pos_level", ""), size=10.5, weight=ft.FontWeight.BOLD, color=C_WHITE),
                                     ),
                                 ],
                             ),
-                            ft.Text(word_of_day.get("word", ""), size=20, weight=ft.FontWeight.BOLD, color=C_WHITE),
-                            ft.Text(f"Arti: {word_of_day.get('arti', '')}", size=13, weight=ft.FontWeight.W_600, color=C_SECONDARY),
+                            ft.Row(
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Text(word_of_day.get("word", ""), size=22, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                    ft.Text(f"#{word_of_day.get('id', 1)}", size=11, color=C_SECONDARY),
+                                ],
+                            ),
+                            ft.Text(f"Arti: {word_of_day.get('arti', '')}", size=13.5, weight=ft.FontWeight.W_600, color=C_SECONDARY),
                             ft.Text(wod_desc, size=12, color=C_TEXT_LIGHT),
                             *(
                                 [
                                     ft.Container(
                                         bgcolor=C_BG_DEEP,
-                                        padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+                                        padding=ft.Padding.symmetric(horizontal=10, vertical=7),
                                         border_radius=ft.BorderRadius.all(8),
                                         border=ft.Border.all(1, C_MUTED),
                                         content=ft.Row(
@@ -490,7 +665,7 @@ class MyLifeApp:
                                             vertical_alignment=ft.CrossAxisAlignment.START,
                                             controls=[
                                                 ft.Text("💬", size=11),
-                                                ft.Text(f'"{wod_ex}"', size=11, color=C_SECONDARY, italic=True, expand=True),
+                                                ft.Text(f'"{wod_ex}"', size=11.5, color=C_SECONDARY, italic=True, expand=True),
                                             ],
                                         ),
                                     )
@@ -499,14 +674,18 @@ class MyLifeApp:
                                 else []
                             ),
                             ft.Row(
-                                alignment=ft.MainAxisAlignment.END,
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
+                                    ft.TextButton(
+                                        content="Buka Flashcard 🔄",
+                                        on_click=lambda e: self._jump_to(1, 1),
+                                    ),
                                     ft.Button(
                                         content="Tandai Sudah Hafal ✅" if word_of_day.get("status") != "hafal" else "Sudah Dihafal ✓",
-                                        bgcolor=C_PRIMARY if word_of_day.get("status") != "hafal" else C_MUTED,
-                                        color=C_WHITE,
+                                        bgcolor=C_PRIMARY if word_of_day.get("status") != "hafal" else C_SUCCESS,
+                                        color=C_WHITE if word_of_day.get("status") != "hafal" else C_BG_DEEP,
                                         on_click=quick_memorize_wod,
-                                    )
+                                    ),
                                 ],
                             ),
                         ],
@@ -515,55 +694,90 @@ class MyLifeApp:
 
                 # Ringkasan Keuangan Bulan Ini Card
                 ft.Container(
-                    bgcolor=C_CARD_DARK,
+                    gradient=dark_card_gradient(),
                     padding=ft.Padding.all(14),
-                    border_radius=ft.BorderRadius.all(14),
+                    border_radius=ft.BorderRadius.all(15),
                     border=ft.Border.all(1, C_MUTED),
+                    shadow=card_shadow(),
                     content=ft.Column(
                         spacing=10,
                         controls=[
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                 controls=[
                                     ft.Row(
                                         spacing=8,
                                         controls=[
-                                            ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET_ROUNDED, color=C_SECONDARY, size=20),
+                                            ft.Container(
+                                                width=28,
+                                                height=28,
+                                                bgcolor=C_PRIMARY,
+                                                border_radius=ft.BorderRadius.all(8),
+                                                alignment=ft.Alignment.CENTER,
+                                                content=ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET_ROUNDED, color=C_WHITE, size=16),
+                                            ),
                                             ft.Text(
                                                 f"Keuangan {MONTH_NAMES_ID[self.selected_month]} {self.selected_year}",
-                                                size=14,
+                                                size=13.5,
                                                 weight=ft.FontWeight.BOLD,
-                                                color=C_TEXT_LIGHT,
+                                                color=C_WHITE,
                                             ),
                                         ],
                                     ),
                                     ft.Container(
-                                        bgcolor=C_MUTED,
+                                        bgcolor=C_BG_DEEP,
                                         padding=ft.Padding.symmetric(horizontal=8, vertical=3),
                                         border_radius=ft.BorderRadius.all(8),
-                                        content=ft.Text(f"Rule {f_ov['rule']['mode']}", size=11, color=C_SECONDARY, weight=ft.FontWeight.BOLD),
+                                        border=ft.Border.all(1, C_SECONDARY),
+                                        content=ft.Text(
+                                            f"Rule {f_ov['rule']['mode']}",
+                                            size=10.5,
+                                            color=C_SECONDARY,
+                                            weight=ft.FontWeight.BOLD,
+                                        ),
                                     ),
                                 ],
                             ),
                             ft.Row(
                                 spacing=8,
                                 controls=[
-                                    self._finance_box("Pendapatan", format_rp(f_ov["pendapatan"]), C_SUCCESS),
-                                    self._finance_box("Sisa / Selisih", format_rp(f_ov["selisih"]), C_SECONDARY if f_ov["selisih"] >= 0 else C_DANGER),
+                                    self._finance_box("Total Pendapatan", format_rp(f_ov["pendapatan"]), C_SUCCESS),
+                                    self._finance_box(
+                                        "Selisih / Sisa Saldo",
+                                        format_rp(f_ov["selisih"]),
+                                        C_SUCCESS if f_ov["selisih"] >= 0 else C_DANGER,
+                                    ),
                                 ],
                             ),
                             ft.Row(
                                 spacing=8,
                                 controls=[
-                                    self._finance_box("Kebutuhan", f"{format_rp(f_ov['kebutuhan'])} ({f_ov['rule']['kebutuhan_actual_pct']}%)", C_TEXT_LIGHT),
-                                    self._finance_box("Keinginan", f"{format_rp(f_ov['keinginan'])} ({f_ov['rule']['keinginan_actual_pct']}%)", C_WARNING),
+                                    self._finance_box(
+                                        f"Kebutuhan ({f_ov['rule']['kebutuhan_actual_pct']}%)",
+                                        format_rp(f_ov["kebutuhan"]),
+                                        C_TEXT_LIGHT,
+                                    ),
+                                    self._finance_box(
+                                        f"Keinginan ({f_ov['rule']['keinginan_actual_pct']}%)",
+                                        format_rp(f_ov["keinginan"]),
+                                        C_WARNING,
+                                    ),
                                 ],
                             ),
                             ft.Row(
                                 spacing=8,
                                 controls=[
-                                    self._finance_box("Tabungan & Invest", f"{format_rp(f_ov['tabungan'])} ({f_ov['rule']['tabungan_actual_pct']}%)", C_SECONDARY),
-                                    self._finance_box("Langganan/Bln", format_rp(subs["total_bulanan"]), C_TEXT_LIGHT),
+                                    self._finance_box(
+                                        f"Tabungan ({f_ov['rule']['tabungan_actual_pct']}%)",
+                                        format_rp(f_ov["tabungan"]),
+                                        C_SECONDARY,
+                                    ),
+                                    self._finance_box(
+                                        "Beban Langganan/Bln",
+                                        format_rp(subs["total_bulanan"]),
+                                        C_TEXT_LIGHT,
+                                    ),
                                 ],
                             ),
                             ft.Row(
@@ -571,15 +785,15 @@ class MyLifeApp:
                                 controls=[
                                     ft.Button(
                                         content="+ Catat Transaksi",
-                                        icon=ft.Icons.ADD_CARD,
+                                        icon=ft.Icons.ADD_CARD_ROUNDED,
                                         bgcolor=C_PRIMARY,
                                         color=C_WHITE,
                                         expand=True,
                                         on_click=lambda e: self._jump_to(3, 0),
                                     ),
                                     ft.Button(
-                                        content="Overview Bulanan",
-                                        icon=ft.Icons.PIE_CHART_OUTLINE,
+                                        content="Analisis Budget",
+                                        icon=ft.Icons.PIE_CHART_ROUNDED,
                                         bgcolor=C_MUTED,
                                         color=C_TEXT_LIGHT,
                                         expand=True,
@@ -598,6 +812,8 @@ class MyLifeApp:
         self.nav_bar.selected_index = main_idx
         if main_idx == 1:
             self.vocab_subtab = sub_idx
+            if sub_idx == 1:
+                self.flashcard_list = []
         elif main_idx == 2:
             self.tracker_subtab = sub_idx
         elif main_idx == 3:
@@ -606,20 +822,24 @@ class MyLifeApp:
             self.setup_subtab = sub_idx
         self.render()
 
-    def _stat_mini_box(self, label: str, val: str, val_color: str) -> ft.Container:
+    def _stat_mini_box(self, label: str, val: str, val_color: str, icon_name=None) -> ft.Container:
+        top_controls = []
+        if icon_name:
+            top_controls.append(ft.Icon(icon_name, color=val_color, size=15))
+        top_controls.append(
+            ft.Text(val, size=13.5, weight=ft.FontWeight.BOLD, color=val_color, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+        )
         return ft.Container(
             expand=True,
             bgcolor=C_BG_DEEP,
-            padding=ft.Padding.symmetric(horizontal=8, vertical=8),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=8),
             border_radius=ft.BorderRadius.all(10),
             border=ft.Border.all(1, C_MUTED),
-            alignment=ft.Alignment.CENTER,
             content=ft.Column(
                 spacing=2,
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
-                    ft.Text(val, size=14, weight=ft.FontWeight.BOLD, color=val_color),
-                    ft.Text(label, size=10, color=C_TEXT_LIGHT, text_align=ft.TextAlign.CENTER),
+                    ft.Row(spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=top_controls),
+                    ft.Text(label, size=10.5, color=C_TEXT_LIGHT, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                 ],
             ),
         )
@@ -634,8 +854,8 @@ class MyLifeApp:
             content=ft.Column(
                 spacing=2,
                 controls=[
-                    ft.Text(label, size=11, color=C_SECONDARY),
-                    ft.Text(val, size=12, weight=ft.FontWeight.BOLD, color=val_color),
+                    ft.Text(label, size=10.5, color=C_SECONDARY, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Text(val, size=12.5, weight=ft.FontWeight.BOLD, color=val_color, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                 ],
             ),
         )
@@ -647,7 +867,7 @@ class MyLifeApp:
         oxford_path = os.path.join(base_dir, "Oxford_5000_Kosakata.xlsx")
         generate_oxford_excel(vocab_rows, oxford_path)
         export_full_app_report(self.db, report_path)
-        self.notify("File Excel berhasil diekspor: Oxford_5000_Kosakata.xlsx & Laporan_Lengkap_MyLife.xlsx!", C_PRIMARY)
+        self.notify("Berhasil diekspor: Oxford_5000_Kosakata.xlsx & Laporan_Lengkap_MyLife.xlsx!", C_PRIMARY)
 
     # =========================================================================
     # TAB 1: KOSAKATA & LATIHAN (OXFORD 5000)
@@ -655,10 +875,13 @@ class MyLifeApp:
     def build_vocab_view(self) -> ft.Control:
         def switch_sub(idx: int):
             self.vocab_subtab = idx
+            if idx == 1:
+                self.flashcard_list = []
+                self.flashcard_flipped = False
             self.render()
 
         sub_bar = self.build_subtab_bar(
-            ["Daftar 2000 Kata", "Flashcard Hafalan", "Latihan & Tebakan"],
+            ["Daftar 2000 Kata", "Flashcard", "Latihan & Tebakan"],
             self.vocab_subtab,
             switch_sub,
         )
@@ -672,7 +895,8 @@ class MyLifeApp:
 
         return ft.Column(expand=True, spacing=4, controls=[sub_bar, content])
 
-    def build_vocab_list_subview(self) -> ft.Control:
+    def _populate_vocab_results_host(self):
+        """Updates only the vocabulary results container so the search TextField never loses focus."""
         rows, total_matching = self.db.query_vocab(
             search=self.vocab_search,
             status_filter=self.vocab_status_filter,
@@ -682,73 +906,47 @@ class MyLifeApp:
             offset=self.vocab_page_offset,
         )
 
-        def on_search_change(e):
-            self.vocab_search = e.control.value
-            self.vocab_page_offset = 0
-            self.render()
-
         def set_status_filter(val: str):
             self.vocab_status_filter = val
             self.vocab_page_offset = 0
-            self.render()
+            self._populate_vocab_results_host()
+            self.page.update()
 
         def set_level_filter(val: str):
             self.vocab_level_filter = val
             self.vocab_page_offset = 0
-            self.render()
-
-        def toggle_fav_filter(e):
-            self.vocab_fav_only = not self.vocab_fav_only
-            self.vocab_page_offset = 0
-            self.render()
+            self._populate_vocab_results_host()
+            self.page.update()
 
         def change_word_status(word_id: int, new_st: str):
             self.db.update_vocab_status(word_id, new_st)
             label_map = {"hafal": "SUDAH HAFAL ✅", "belajar": "SEDANG BELAJAR 📖", "belum": "BELUM HAFAL"}
             self.notify(f"Status kosakata diubah ke {label_map.get(new_st, new_st)}", C_PRIMARY)
-            self.render()
+            self._populate_vocab_results_host()
+            self.page.update()
 
         def toggle_word_fav(word_id: int):
             self.db.toggle_favorite(word_id)
-            self.render()
-
-        def open_add_vocab_dialog(e):
-            tf_word = ft.TextField(label="Kata Bahasa Inggris", color=C_TEXT_LIGHT, bgcolor=C_MUTED)
-            tf_pos = ft.TextField(label="Kelas Kata & Level (misal: n. B2 / v. C1)", value="n. B2", color=C_TEXT_LIGHT, bgcolor=C_MUTED)
-            tf_arti = ft.TextField(label="Arti Bahasa Indonesia", color=C_TEXT_LIGHT, bgcolor=C_MUTED)
-            tf_penj = ft.TextField(label="Penjelasan & Contoh Kalimat", multiline=True, min_lines=2, color=C_TEXT_LIGHT, bgcolor=C_MUTED)
-
-            def save_new_word(ev):
-                if not tf_word.value.strip() or not tf_arti.value.strip():
-                    self.notify("Kata Inggris dan Arti wajib diisi!", C_DANGER)
-                    return
-                self.db.add_custom_vocab(tf_word.value, tf_pos.value, tf_arti.value, tf_penj.value or tf_arti.value)
-                self.page.pop_dialog()
-                self.notify(f"Kosakata '{tf_word.value}' berhasil ditambahkan!", C_PRIMARY)
-                self.render()
-
-            dlg = ft.AlertDialog(
-                bgcolor=C_CARD_DARK,
-                title=ft.Text("Tambah Kosakata Baru", color=C_TEXT_LIGHT, weight=ft.FontWeight.BOLD),
-                content=ft.Column(tight=True, spacing=8, controls=[tf_word, tf_pos, tf_arti, tf_penj]),
-                actions=[
-                    ft.TextButton(content="Batal", on_click=lambda ev: self.page.pop_dialog()),
-                    ft.Button(content="Simpan", bgcolor=C_PRIMARY, color=C_WHITE, on_click=save_new_word),
-                ],
-            )
-            self.page.show_dialog(dlg)
+            self._populate_vocab_results_host()
+            self.page.update()
 
         # Filter Chips Bar
         status_chips = []
-        for code, lbl in [("semua", "Semua"), ("belum", "Belum"), ("belajar", "Belajar"), ("hafal", "Hafal ✅")]:
+        for code, lbl in [("semua", "Semua"), ("belum", "Belum"), ("belajar", "Belajar 📖"), ("hafal", "Hafal ✅")]:
             active = self.vocab_status_filter == code
             status_chips.append(
                 ft.Container(
                     bgcolor=C_PRIMARY if active else C_MUTED,
                     padding=ft.Padding.symmetric(horizontal=10, vertical=5),
                     border_radius=ft.BorderRadius.all(16),
+                    border=ft.Border.all(1, C_SECONDARY if active else C_MUTED),
                     on_click=lambda e, c=code: set_status_filter(c),
-                    content=ft.Text(lbl, size=11, color=C_WHITE if active else C_TEXT_LIGHT, weight=ft.FontWeight.BOLD if active else ft.FontWeight.NORMAL),
+                    content=ft.Text(
+                        lbl,
+                        size=11,
+                        color=C_WHITE if active else C_TEXT_LIGHT,
+                        weight=ft.FontWeight.BOLD if active else ft.FontWeight.NORMAL,
+                    ),
                 )
             )
 
@@ -757,11 +955,16 @@ class MyLifeApp:
             status_chips.append(
                 ft.Container(
                     bgcolor=C_SECONDARY if active_l else C_BG_DEEP,
-                    padding=ft.Padding.symmetric(horizontal=8, vertical=5),
+                    padding=ft.Padding.symmetric(horizontal=9, vertical=5),
                     border_radius=ft.BorderRadius.all(16),
                     border=ft.Border.all(1, C_SECONDARY),
                     on_click=lambda e, l=lvl: set_level_filter("semua" if self.vocab_level_filter == l else l),
-                    content=ft.Text(lvl, size=11, color=C_BG_DEEP if active_l else C_SECONDARY, weight=ft.FontWeight.BOLD),
+                    content=ft.Text(
+                        f"Level {lvl}",
+                        size=11,
+                        color=C_BG_DEEP if active_l else C_SECONDARY,
+                        weight=ft.FontWeight.BOLD,
+                    ),
                 )
             )
 
@@ -776,19 +979,29 @@ class MyLifeApp:
                 ft.Container(
                     bgcolor=C_CARD_DARK,
                     padding=ft.Padding.all(12),
-                    border_radius=ft.BorderRadius.all(12),
-                    border=ft.Border.all(1, C_PRIMARY if st == "hafal" else C_MUTED),
+                    border_radius=ft.BorderRadius.all(13),
+                    border=ft.Border.all(1.2 if st == "hafal" else 1, C_PRIMARY if st == "hafal" else C_MUTED),
                     content=ft.Column(
                         spacing=6,
                         controls=[
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                 controls=[
                                     ft.Row(
-                                        spacing=8,
+                                        spacing=6,
+                                        expand=True,
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                         controls=[
                                             ft.Text(f"#{item['id']}", size=11, color=C_SECONDARY),
-                                            ft.Text(item["word"], size=16, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                            ft.Text(
+                                                item["word"],
+                                                size=15.5,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=C_WHITE,
+                                                max_lines=1,
+                                                overflow=ft.TextOverflow.ELLIPSIS,
+                                            ),
                                             ft.Container(
                                                 bgcolor=C_MUTED,
                                                 padding=ft.Padding.symmetric(horizontal=6, vertical=2),
@@ -798,18 +1011,23 @@ class MyLifeApp:
                                         ],
                                     ),
                                     ft.Row(
-                                        spacing=4,
+                                        spacing=2,
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                         controls=[
                                             ft.Container(
                                                 bgcolor=C_BG_DEEP,
                                                 padding=ft.Padding.symmetric(horizontal=7, vertical=3),
                                                 border_radius=ft.BorderRadius.all(8),
-                                                content=ft.Text(st_badge, size=9, weight=ft.FontWeight.BOLD, color=st_color),
+                                                border=ft.Border.all(1, st_color),
+                                                content=ft.Text(st_badge, size=8.5, weight=ft.FontWeight.BOLD, color=st_color),
                                             ),
                                             ft.IconButton(
                                                 icon=ft.Icons.STAR_ROUNDED if item["is_favorite"] else ft.Icons.STAR_BORDER_ROUNDED,
                                                 icon_color=C_WARNING if item["is_favorite"] else C_SECONDARY,
                                                 icon_size=18,
+                                                width=30,
+                                                height=30,
+                                                style=ft.ButtonStyle(padding=ft.Padding.all(2)),
                                                 on_click=lambda e, wid=item["id"]: toggle_word_fav(wid),
                                             ),
                                         ],
@@ -817,20 +1035,20 @@ class MyLifeApp:
                                 ],
                             ),
                             ft.Text(f"Arti: {item['arti']}", size=13, weight=ft.FontWeight.W_600, color=C_SECONDARY),
-                            ft.Text(item_desc, size=11, color=C_TEXT_LIGHT),
+                            ft.Text(item_desc, size=11.5, color=C_TEXT_LIGHT),
                             *(
                                 [
                                     ft.Container(
                                         bgcolor=C_BG_DEEP,
                                         padding=ft.Padding.symmetric(horizontal=8, vertical=5),
-                                        border_radius=ft.BorderRadius.all(6),
+                                        border_radius=ft.BorderRadius.all(7),
                                         border=ft.Border.all(1, C_MUTED),
                                         content=ft.Row(
                                             spacing=6,
                                             vertical_alignment=ft.CrossAxisAlignment.START,
                                             controls=[
                                                 ft.Text("💬", size=10),
-                                                ft.Text(f'"{item_ex}"', size=10, color=C_SECONDARY, italic=True, expand=True),
+                                                ft.Text(f'"{item_ex}"', size=10.5, color=C_SECONDARY, italic=True, expand=True),
                                             ],
                                         ),
                                     )
@@ -840,15 +1058,16 @@ class MyLifeApp:
                             ),
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                 controls=[
                                     ft.Text(
-                                        f"Latihan: {item['times_correct']}/{item['times_quizzed']} benar"
-                                        + (f" • Hafal: {item['memorized_date']}" if item.get("memorized_date") else ""),
+                                        f"Kuis: {item['times_correct']}/{item['times_quizzed']}"
+                                        + (f" • {item['memorized_date']}" if item.get("memorized_date") else ""),
                                         size=10,
                                         color=C_SECONDARY,
                                     ),
                                     ft.Row(
-                                        spacing=6,
+                                        spacing=5,
                                         controls=[
                                             ft.Container(
                                                 bgcolor=C_MUTED if st != "belum" else C_BG_DEEP,
@@ -862,7 +1081,12 @@ class MyLifeApp:
                                                 padding=ft.Padding.symmetric(horizontal=8, vertical=4),
                                                 border_radius=ft.BorderRadius.all(6),
                                                 on_click=lambda e, wid=item["id"]: change_word_status(wid, "belajar"),
-                                                content=ft.Text("Belajar 📖", size=10, color=C_BG_DEEP if st == "belajar" else C_WHITE, weight=ft.FontWeight.BOLD),
+                                                content=ft.Text(
+                                                    "Belajar 📖",
+                                                    size=10,
+                                                    color=C_BG_DEEP if st == "belajar" else C_WHITE,
+                                                    weight=ft.FontWeight.BOLD,
+                                                ),
                                             ),
                                             ft.Container(
                                                 bgcolor=C_PRIMARY if st != "hafal" else C_SUCCESS,
@@ -885,119 +1109,168 @@ class MyLifeApp:
                 )
             )
 
-        # Pagination Controls
         start_num = self.vocab_page_offset + 1 if total_matching > 0 else 0
         end_num = min(total_matching, self.vocab_page_offset + self.vocab_page_size)
+        total_pages = max(1, (total_matching + self.vocab_page_size - 1) // self.vocab_page_size)
+        curr_page = (self.vocab_page_offset // self.vocab_page_size) + 1
 
         def prev_page(e):
             if self.vocab_page_offset >= self.vocab_page_size:
                 self.vocab_page_offset -= self.vocab_page_size
-                self.render()
+                self._populate_vocab_results_host()
+                self.page.update()
 
         def next_page(e):
             if self.vocab_page_offset + self.vocab_page_size < total_matching:
                 self.vocab_page_offset += self.vocab_page_size
-                self.render()
+                self._populate_vocab_results_host()
+                self.page.update()
+
+        pagination_row = ft.Row(
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Text(
+                    f"Hal {curr_page}/{total_pages} ({start_num}–{end_num} dari {total_matching})",
+                    size=11,
+                    color=C_SECONDARY,
+                    weight=ft.FontWeight.BOLD,
+                ),
+                ft.Row(
+                    spacing=6,
+                    controls=[
+                        ft.Button(
+                            content="◀ Prev",
+                            bgcolor=C_MUTED,
+                            color=C_TEXT_LIGHT,
+                            disabled=(self.vocab_page_offset == 0),
+                            on_click=prev_page,
+                        ),
+                        ft.Button(
+                            content="Next ▶",
+                            bgcolor=C_PRIMARY if (self.vocab_page_offset + self.vocab_page_size < total_matching) else C_MUTED,
+                            color=C_WHITE if (self.vocab_page_offset + self.vocab_page_size < total_matching) else C_TEXT_LIGHT,
+                            disabled=(self.vocab_page_offset + self.vocab_page_size >= total_matching),
+                            on_click=next_page,
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+        self.vocab_results_host.content = ft.Column(
+            expand=True,
+            spacing=8,
+            controls=[
+                ft.Row(spacing=6, wrap=True, controls=status_chips),
+                pagination_row,
+                ft.ListView(
+                    expand=True,
+                    spacing=8,
+                    padding=ft.Padding.only(bottom=24),
+                    controls=(
+                        [*word_cards, ft.Container(padding=ft.Padding.symmetric(vertical=8), content=pagination_row)]
+                        if word_cards
+                        else [
+                            ft.Container(
+                                bgcolor=C_CARD_DARK,
+                                padding=ft.Padding.all(24),
+                                border_radius=ft.BorderRadius.all(14),
+                                alignment=ft.Alignment.CENTER,
+                                content=ft.Text("Tidak ada kosakata yang cocok dengan pencarian/filter ini.", color=C_SECONDARY),
+                            )
+                        ]
+                    ),
+                ),
+            ],
+        )
+
+    def build_vocab_list_subview(self) -> ft.Control:
+        def on_search_change(e):
+            self.vocab_search = e.control.value or ""
+            self.vocab_page_offset = 0
+            self._populate_vocab_results_host()
+            self.page.update()
+
+        def toggle_fav_filter(e):
+            self.vocab_fav_only = not self.vocab_fav_only
+            self.vocab_page_offset = 0
+            fav_btn.icon = ft.Icons.STAR_ROUNDED if self.vocab_fav_only else ft.Icons.STAR_BORDER_ROUNDED
+            fav_btn.icon_color = C_WARNING if self.vocab_fav_only else C_TEXT_LIGHT
+            self._populate_vocab_results_host()
+            self.page.update()
+
+        def open_add_vocab_dialog(e):
+            tf_word = ft.TextField(label="Kata Bahasa Inggris", color=C_TEXT_LIGHT, bgcolor=C_MUTED)
+            tf_pos = ft.TextField(label="Kelas Kata & Level (misal: n. B2 / v. C1)", value="n. B2", color=C_TEXT_LIGHT, bgcolor=C_MUTED)
+            tf_arti = ft.TextField(label="Arti Bahasa Indonesia", color=C_TEXT_LIGHT, bgcolor=C_MUTED)
+            tf_penj = ft.TextField(label="Penjelasan & Contoh Kalimat", multiline=True, min_lines=2, color=C_TEXT_LIGHT, bgcolor=C_MUTED)
+
+            def save_new_word(ev):
+                if not tf_word.value.strip() or not tf_arti.value.strip():
+                    self.notify("Kata Inggris dan Arti wajib diisi!", C_DANGER)
+                    return
+                self.db.add_custom_vocab(tf_word.value, tf_pos.value, tf_arti.value, tf_penj.value or tf_arti.value)
+                self.page.pop_dialog()
+                self.notify(f"Kosakata '{tf_word.value}' berhasil ditambahkan!", C_PRIMARY)
+                self._populate_vocab_results_host()
+                self.page.update()
+
+            dlg = ft.AlertDialog(
+                bgcolor=C_CARD_DARK,
+                title=ft.Text("Tambah Kosakata Baru", color=C_TEXT_LIGHT, weight=ft.FontWeight.BOLD),
+                content=ft.Column(tight=True, spacing=8, controls=[tf_word, tf_pos, tf_arti, tf_penj]),
+                actions=[
+                    ft.TextButton(content="Batal", on_click=lambda ev: self.page.pop_dialog()),
+                    ft.Button(content="Simpan", bgcolor=C_PRIMARY, color=C_WHITE, on_click=save_new_word),
+                ],
+            )
+            self.page.show_dialog(dlg)
+
+        fav_btn = ft.IconButton(
+            icon=ft.Icons.STAR_ROUNDED if self.vocab_fav_only else ft.Icons.STAR_BORDER_ROUNDED,
+            icon_color=C_WARNING if self.vocab_fav_only else C_TEXT_LIGHT,
+            bgcolor=C_CARD_DARK,
+            tooltip="Filter Favorit",
+            on_click=toggle_fav_filter,
+        )
+
+        search_row = ft.Row(
+            spacing=8,
+            controls=[
+                ft.TextField(
+                    hint_text="Cari kata Inggris atau arti Indonesia...",
+                    value=self.vocab_search,
+                    prefix_icon=ft.Icons.SEARCH,
+                    color=C_TEXT_LIGHT,
+                    bgcolor=C_CARD_DARK,
+                    border_color=C_MUTED,
+                    focused_border_color=C_SECONDARY,
+                    border_radius=ft.BorderRadius.all(12),
+                    dense=True,
+                    text_size=13,
+                    expand=True,
+                    on_change=on_search_change,
+                ),
+                fav_btn,
+                ft.IconButton(
+                    icon=ft.Icons.ADD_CIRCLE_OUTLINE,
+                    icon_color=C_WHITE,
+                    bgcolor=C_PRIMARY,
+                    tooltip="Tambah Kosakata Baru",
+                    on_click=open_add_vocab_dialog,
+                ),
+            ],
+        )
+
+        self._populate_vocab_results_host()
 
         return ft.Column(
             expand=True,
             spacing=8,
             controls=[
-                ft.Row(
-                    spacing=8,
-                    controls=[
-                        ft.TextField(
-                            hint_text="Cari kata Inggris atau arti Indonesia...",
-                            value=self.vocab_search,
-                            prefix_icon=ft.Icons.SEARCH,
-                            color=C_TEXT_LIGHT,
-                            bgcolor=C_CARD_DARK,
-                            border_color=C_MUTED,
-                            focused_border_color=C_SECONDARY,
-                            text_size=13,
-                            expand=True,
-                            on_change=on_search_change,
-                        ),
-                        ft.IconButton(
-                            icon=ft.Icons.STAR_ROUNDED if self.vocab_fav_only else ft.Icons.STAR_BORDER_ROUNDED,
-                            icon_color=C_WARNING if self.vocab_fav_only else C_TEXT_LIGHT,
-                            bgcolor=C_CARD_DARK,
-                            tooltip="Filter Favorit",
-                            on_click=toggle_fav_filter,
-                        ),
-                        ft.IconButton(
-                            icon=ft.Icons.ADD_CIRCLE_OUTLINE,
-                            icon_color=C_TEXT_LIGHT,
-                            bgcolor=C_PRIMARY,
-                            tooltip="Tambah Kosakata",
-                            on_click=open_add_vocab_dialog,
-                        ),
-                    ],
-                ),
-                ft.Row(spacing=6, wrap=True, controls=status_chips),
-                ft.Row(
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        ft.Text(f"Hal {((self.vocab_page_offset // self.vocab_page_size) + 1)}/{max(1, (total_matching + self.vocab_page_size - 1) // self.vocab_page_size)} ({start_num}–{end_num} dari {total_matching} kata)", size=11, color=C_SECONDARY, weight=ft.FontWeight.BOLD),
-                        ft.Row(
-                            spacing=6,
-                            controls=[
-                                ft.Button(
-                                    content="◀ Prev",
-                                    bgcolor=C_MUTED,
-                                    color=C_TEXT_LIGHT,
-                                    disabled=(self.vocab_page_offset == 0),
-                                    on_click=prev_page,
-                                ),
-                                ft.Button(
-                                    content="Next ▶",
-                                    bgcolor=C_PRIMARY if (self.vocab_page_offset + self.vocab_page_size < total_matching) else C_MUTED,
-                                    color=C_WHITE if (self.vocab_page_offset + self.vocab_page_size < total_matching) else C_TEXT_LIGHT,
-                                    disabled=(self.vocab_page_offset + self.vocab_page_size >= total_matching),
-                                    on_click=next_page,
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-                ft.ListView(
-                    expand=True,
-                    spacing=8,
-                    padding=ft.Padding.only(bottom=30),
-                    controls=[
-                        *word_cards,
-                        ft.Container(
-                            padding=ft.Padding.symmetric(vertical=10),
-                            content=ft.Row(
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                controls=[
-                                    ft.Text(f"Hal {((self.vocab_page_offset // self.vocab_page_size) + 1)}/{max(1, (total_matching + self.vocab_page_size - 1) // self.vocab_page_size)}", size=11, color=C_SECONDARY),
-                                    ft.Row(
-                                        spacing=6,
-                                        controls=[
-                                            ft.Button(
-                                                content="◀ Prev",
-                                                bgcolor=C_MUTED,
-                                                color=C_TEXT_LIGHT,
-                                                disabled=(self.vocab_page_offset == 0),
-                                                on_click=prev_page,
-                                            ),
-                                            ft.Button(
-                                                content="Next ▶",
-                                                bgcolor=C_PRIMARY if (self.vocab_page_offset + self.vocab_page_size < total_matching) else C_MUTED,
-                                                color=C_WHITE if (self.vocab_page_offset + self.vocab_page_size < total_matching) else C_TEXT_LIGHT,
-                                                disabled=(self.vocab_page_offset + self.vocab_page_size >= total_matching),
-                                                on_click=next_page,
-                                            ),
-                                        ],
-                                    ),
-                                ],
-                            ),
-                        ),
-                    ],
-                ),
+                search_row,
+                self.vocab_results_host,
             ],
         )
 
@@ -1005,144 +1278,245 @@ class MyLifeApp:
         if not self.flashcard_list:
             rows, _ = self.db.query_vocab(
                 status_filter=self.flashcard_filter if self.flashcard_filter != "semua" else "semua",
-                limit=200,
+                limit=300,
                 offset=0,
             )
             self.flashcard_list = rows
-            self.flashcard_index = 0
+            self.flashcard_index = max(0, min(self.flashcard_index, len(self.flashcard_list) - 1))
 
-        if not self.flashcard_list:
-            return ft.Container(
-                expand=True,
-                alignment=ft.Alignment.CENTER,
-                content=ft.Column(
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=10,
+        filter_chips = ft.Row(
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            controls=[
+                ft.Row(
+                    spacing=5,
+                    wrap=True,
                     controls=[
-                        ft.Text("Tidak ada kata pada filter ini.", color=C_TEXT_LIGHT),
-                        ft.Button(
-                            content="Tampilkan Semua Kata",
-                            bgcolor=C_PRIMARY,
-                            color=C_WHITE,
-                            on_click=lambda e: self._set_flashcard_filter("semua"),
-                        ),
+                        ft.Container(
+                            bgcolor=C_PRIMARY if self.flashcard_filter == f_code else C_MUTED,
+                            padding=ft.Padding.symmetric(horizontal=10, vertical=5),
+                            border_radius=ft.BorderRadius.all(14),
+                            border=ft.Border.all(1, C_SECONDARY if self.flashcard_filter == f_code else C_MUTED),
+                            on_click=lambda e, fc=f_code: self._set_flashcard_filter(fc),
+                            content=ft.Text(f_lbl, size=11, color=C_WHITE, weight=ft.FontWeight.BOLD if self.flashcard_filter == f_code else ft.FontWeight.NORMAL),
+                        )
+                        for f_code, f_lbl in [("semua", "Semua"), ("belum", "Belum"), ("belajar", "Belajar 📖"), ("hafal", "Hafal ✅")]
                     ],
                 ),
+                ft.IconButton(
+                    icon=ft.Icons.SHUFFLE_ROUNDED,
+                    icon_color=C_TEXT_LIGHT,
+                    bgcolor=C_CARD_DARK,
+                    tooltip="Acak Urutan Kartu",
+                    on_click=lambda e: self._shuffle_flashcards(),
+                ),
+            ],
+        )
+
+        if not self.flashcard_list:
+            return ft.Column(
+                expand=True,
+                spacing=12,
+                controls=[
+                    filter_chips,
+                    ft.Container(
+                        expand=True,
+                        bgcolor=C_CARD_DARK,
+                        border_radius=ft.BorderRadius.all(16),
+                        border=ft.Border.all(1, C_MUTED),
+                        alignment=ft.Alignment.CENTER,
+                        padding=ft.Padding.all(24),
+                        content=ft.Column(
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                            alignment=ft.MainAxisAlignment.CENTER,
+                            spacing=10,
+                            controls=[
+                                ft.Icon(ft.Icons.STYLE_OUTLINED, color=C_SECONDARY, size=48),
+                                ft.Text("Belum ada kosakata pada kategori filter ini.", color=C_TEXT_LIGHT, size=14, text_align=ft.TextAlign.CENTER),
+                                ft.Button(
+                                    content="Tampilkan Semua 2000 Kata",
+                                    bgcolor=C_PRIMARY,
+                                    color=C_WHITE,
+                                    on_click=lambda e: self._set_flashcard_filter("semua"),
+                                ),
+                            ],
+                        ),
+                    ),
+                ],
             )
 
         self.flashcard_index = max(0, min(self.flashcard_index, len(self.flashcard_list) - 1))
         card = self.flashcard_list[self.flashcard_index]
+        card_desc, card_ex = parse_penjelasan(card.get("penjelasan", ""))
+        st = card.get("status", "belum")
+        st_color = C_SUCCESS if st == "hafal" else (C_WARNING if st == "belajar" else C_SECONDARY)
+        st_label = "SUDAH HAFAL ✅" if st == "hafal" else ("SEDANG BELAJAR 📖" if st == "belajar" else "BELUM HAFAL")
 
         def flip_card(e):
             self.flashcard_flipped = not self.flashcard_flipped
             self.render()
 
         def next_card(e):
-            self.flashcard_index = (self.flashcard_index + 1) % len(self.flashcard_list)
-            self.flashcard_flipped = False
-            self.render()
+            if self.flashcard_list:
+                self.flashcard_index = (self.flashcard_index + 1) % len(self.flashcard_list)
+                self.flashcard_flipped = False
+                self.render()
 
         def prev_card(e):
-            self.flashcard_index = (self.flashcard_index - 1) % len(self.flashcard_list)
-            self.flashcard_flipped = False
+            if self.flashcard_list:
+                self.flashcard_index = (self.flashcard_index - 1) % len(self.flashcard_list)
+                self.flashcard_flipped = False
+                self.render()
+
+        def toggle_fav_card(e):
+            new_fav = self.db.toggle_favorite(card["id"])
+            card["is_favorite"] = new_fav
             self.render()
 
-        def shuffle_cards(e):
-            random.shuffle(self.flashcard_list)
-            self.flashcard_index = 0
-            self.flashcard_flipped = False
-            self.render()
+        def mark_card(new_status: str):
+            self.db.update_vocab_status(card["id"], new_status)
+            card["status"] = new_status
+            self.notify(f"'{card['word']}' ditandai sebagai {new_status.upper()}!", C_PRIMARY)
+            if self.flashcard_filter != "semua" and self.flashcard_filter != new_status:
+                self.flashcard_list.pop(self.flashcard_index)
+                if self.flashcard_index >= len(self.flashcard_list):
+                    self.flashcard_index = 0
+                self.flashcard_flipped = False
+                self.render()
+            else:
+                next_card(None)
 
-        def mark_card(status: str):
-            self.db.update_vocab_status(card["id"], status)
-            card["status"] = status
-            self.notify(f"'{card['word']}' ditandai sebagai {status.upper()}!", C_PRIMARY)
-            next_card(None)
+        progress_val = (self.flashcard_index + 1) / max(1, len(self.flashcard_list))
 
         return ft.Column(
             expand=True,
-            spacing=12,
+            spacing=10,
             controls=[
+                filter_chips,
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     controls=[
-                        ft.Row(
-                            spacing=6,
-                            controls=[
-                                ft.Container(
-                                    bgcolor=C_PRIMARY if self.flashcard_filter == f_code else C_MUTED,
-                                    padding=ft.Padding.symmetric(horizontal=10, vertical=5),
-                                    border_radius=ft.BorderRadius.all(14),
-                                    on_click=lambda e, fc=f_code: self._set_flashcard_filter(fc),
-                                    content=ft.Text(f_lbl, size=11, color=C_WHITE),
-                                )
-                                for f_code, f_lbl in [("semua", "Semua"), ("belum", "Belum Hafal"), ("belajar", "Belajar"), ("hafal", "Sudah Hafal")]
-                            ],
+                        ft.Text(
+                            f"Kartu {self.flashcard_index + 1} / {len(self.flashcard_list)}",
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=C_SECONDARY,
                         ),
-                        ft.IconButton(
-                            icon=ft.Icons.SHUFFLE_ROUNDED,
-                            icon_color=C_TEXT_LIGHT,
-                            bgcolor=C_CARD_DARK,
-                            tooltip="Acak Urutan Kartu",
-                            on_click=shuffle_cards,
+                        ft.Text(
+                            "Ketuk kartu untuk membalik (Flip) 🔄",
+                            size=11.5,
+                            color=C_TEXT_LIGHT,
                         ),
                     ],
                 ),
-                ft.Text(
-                    f"Kartu {self.flashcard_index + 1} dari {len(self.flashcard_list)} • Klik kartu untuk membalik (Flip)",
-                    size=12,
+                ft.ProgressBar(
+                    value=progress_val,
+                    bar_height=6,
                     color=C_SECONDARY,
-                    text_align=ft.TextAlign.CENTER,
+                    bgcolor=C_MUTED,
+                    border_radius=ft.BorderRadius.all(4),
                 ),
                 ft.Container(
                     expand=True,
-                    bgcolor=C_CARD_DARK if not self.flashcard_flipped else C_PRIMARY,
-                    padding=ft.Padding.all(24),
+                    gradient=hero_gradient() if self.flashcard_flipped else dark_card_gradient(),
+                    padding=ft.Padding.all(20),
                     border_radius=ft.BorderRadius.all(20),
-                    border=ft.Border.all(2, C_SECONDARY),
-                    alignment=ft.Alignment.CENTER,
+                    border=ft.Border.all(2, C_SECONDARY if self.flashcard_flipped else C_PRIMARY),
+                    shadow=card_shadow(18),
                     on_click=flip_card,
                     content=ft.Column(
-                        alignment=ft.MainAxisAlignment.CENTER,
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=14,
                         controls=[
-                            ft.Container(
-                                bgcolor=C_MUTED,
-                                padding=ft.Padding.symmetric(horizontal=12, vertical=4),
-                                border_radius=ft.BorderRadius.all(12),
-                                content=ft.Text(
-                                    "KATA BAHASA INGGRIS (Klik untuk lihat Arti)" if not self.flashcard_flipped else "ARTI & PENJELASAN",
-                                    size=11,
-                                    color=C_TEXT_LIGHT,
-                                    weight=ft.FontWeight.BOLD,
-                                ),
+                            # Top Row of Card: ID, Status Badge, Favorite button
+                            ft.Row(
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Container(
+                                        bgcolor=C_BG_DEEP,
+                                        padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+                                        border_radius=ft.BorderRadius.all(10),
+                                        border=ft.Border.all(1, st_color),
+                                        content=ft.Text(st_label, size=10, weight=ft.FontWeight.BOLD, color=st_color),
+                                    ),
+                                    ft.Row(
+                                        spacing=4,
+                                        controls=[
+                                            ft.Container(
+                                                bgcolor=C_MUTED,
+                                                padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+                                                border_radius=ft.BorderRadius.all(10),
+                                                content=ft.Text(f"#{card['id']} • {card['pos_level']}", size=11, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                            ),
+                                            ft.IconButton(
+                                                icon=ft.Icons.STAR_ROUNDED if card.get("is_favorite") else ft.Icons.STAR_BORDER_ROUNDED,
+                                                icon_color=C_WARNING if card.get("is_favorite") else C_TEXT_LIGHT,
+                                                icon_size=20,
+                                                on_click=toggle_fav_card,
+                                            ),
+                                        ],
+                                    ),
+                                ],
                             ),
+                            # Center Content of Flashcard
+                            ft.Column(
+                                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                spacing=10,
+                                controls=[
+                                    ft.Text(
+                                        card["word"],
+                                        size=32,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=C_WHITE,
+                                        text_align=ft.TextAlign.CENTER,
+                                    ),
+                                    ft.Divider(color=C_SECONDARY if self.flashcard_flipped else C_MUTED),
+                                    ft.Text(
+                                        card["arti"] if self.flashcard_flipped else "👆 Ketuk kartu untuk melihat Arti & Penjelasan",
+                                        size=18 if self.flashcard_flipped else 13,
+                                        weight=ft.FontWeight.BOLD if self.flashcard_flipped else ft.FontWeight.NORMAL,
+                                        color=C_WHITE if self.flashcard_flipped else C_SECONDARY,
+                                        text_align=ft.TextAlign.CENTER,
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                card_desc,
+                                                size=12.5,
+                                                color=C_TEXT_LIGHT,
+                                                text_align=ft.TextAlign.CENTER,
+                                            )
+                                        ]
+                                        if self.flashcard_flipped and card_desc
+                                        else []
+                                    ),
+                                    *(
+                                        [
+                                            ft.Container(
+                                                bgcolor=C_BG_DEEP,
+                                                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                                                border_radius=ft.BorderRadius.all(10),
+                                                border=ft.Border.all(1, C_SECONDARY),
+                                                content=ft.Text(
+                                                    f'💬 "{card_ex}"',
+                                                    size=11.5,
+                                                    italic=True,
+                                                    color=C_TEXT_LIGHT,
+                                                    text_align=ft.TextAlign.CENTER,
+                                                ),
+                                            )
+                                        ]
+                                        if self.flashcard_flipped and card_ex
+                                        else []
+                                    ),
+                                ],
+                            ),
+                            # Bottom Footer hint
                             ft.Text(
-                                card["word"],
-                                size=30,
+                                "SISI BELAKANG (ARTI & CONTOH)" if self.flashcard_flipped else "SISI DEPAN (KATA INGGRIS)",
+                                size=10,
                                 weight=ft.FontWeight.BOLD,
-                                color=C_WHITE,
-                                text_align=ft.TextAlign.CENTER,
-                            ),
-                            ft.Text(
-                                f"({card['pos_level']})",
-                                size=14,
-                                color=C_SECONDARY if not self.flashcard_flipped else C_TEXT_LIGHT,
-                            ),
-                            ft.Divider(color=C_MUTED),
-                            ft.Text(
-                                card["arti"] if self.flashcard_flipped else "Ketuk kartu ini untuk membuka arti & penjelasan...",
-                                size=18 if self.flashcard_flipped else 13,
-                                weight=ft.FontWeight.BOLD if self.flashcard_flipped else ft.FontWeight.NORMAL,
-                                color=C_WHITE if self.flashcard_flipped else C_SECONDARY,
-                                text_align=ft.TextAlign.CENTER,
-                            ),
-                            ft.Text(
-                                card["penjelasan"] if self.flashcard_flipped else "",
-                                size=13,
-                                color=C_TEXT_LIGHT,
-                                text_align=ft.TextAlign.CENTER,
+                                color=C_TEXT_LIGHT if self.flashcard_flipped else C_SECONDARY,
                             ),
                         ],
                     ),
@@ -1150,9 +1524,9 @@ class MyLifeApp:
                 ft.Row(
                     spacing=8,
                     controls=[
-                        ft.Button(content="◀ Sebelumnya", bgcolor=C_MUTED, color=C_TEXT_LIGHT, expand=True, on_click=prev_card),
-                        ft.Button(content="Balik Kartu 🔄", bgcolor=C_CARD_DARK, color=C_SECONDARY, expand=True, on_click=flip_card),
-                        ft.Button(content="Berikutnya ▶", bgcolor=C_MUTED, color=C_TEXT_LIGHT, expand=True, on_click=next_card),
+                        ft.Button(content="◀ Prev", bgcolor=C_MUTED, color=C_TEXT_LIGHT, expand=True, on_click=prev_card),
+                        ft.Button(content="Balik 🔄", bgcolor=C_CARD_DARK, color=C_SECONDARY, expand=True, on_click=flip_card),
+                        ft.Button(content="Next ▶", bgcolor=C_MUTED, color=C_TEXT_LIGHT, expand=True, on_click=next_card),
                     ],
                 ),
                 ft.Row(
@@ -1177,9 +1551,17 @@ class MyLifeApp:
             ],
         )
 
+    def _shuffle_flashcards(self):
+        if self.flashcard_list:
+            random.shuffle(self.flashcard_list)
+            self.flashcard_index = 0
+            self.flashcard_flipped = False
+            self.render()
+
     def _set_flashcard_filter(self, f_code: str):
         self.flashcard_filter = f_code
         self.flashcard_list = []
+        self.flashcard_index = 0
         self.flashcard_flipped = False
         self.render()
 
@@ -1190,7 +1572,7 @@ class MyLifeApp:
             selected, distractors = self.db.get_quiz_words(source_filter=self.quiz_source, count=10)
             if not selected:
                 self.notify(
-                    "Belum ada kosakata di kategori 'Sudah Dihafal'. Tandai beberapa kata sebagai 'Hafal ✅' terlebih dahulu atau pilih sumber 'Semua Kata'!",
+                    "Kategori sumber ini masih kosong! Klik 'Tandai 5 Kata Pertama' atau pilih sumber 'Semua 2000 Kata'.",
                     C_WARNING,
                 )
                 return
@@ -1199,37 +1581,112 @@ class MyLifeApp:
             self.quiz_current_idx = 0
             self.quiz_correct_count = 0
             self.quiz_answered = False
-            self.quiz_feedback_text = ""
+            self.quiz_selected_opt_id = None
+            self.quiz_feedback_title = ""
+            self.quiz_feedback_desc = ""
+            self.quiz_feedback_ex = ""
             self.quiz_active = True
             self.render()
 
+        def quick_seed_5_memorized(e):
+            rows, _ = self.db.query_vocab(status_filter="belum", limit=5, offset=0)
+            for r in rows:
+                self.db.update_vocab_status(r["id"], "hafal")
+            self.notify("5 Kosakata pertama berhasil ditandai Sudah Hafal! Silakan mulai kuis.", C_SUCCESS)
+            self.render()
+
         if not self.quiz_active:
+            empty_hafal_banner = []
+            if self.quiz_source == "hafal" and v_sum["hafal"] == 0:
+                empty_hafal_banner.append(
+                    ft.Container(
+                        bgcolor=C_BG_DEEP,
+                        padding=ft.Padding.all(12),
+                        border_radius=ft.BorderRadius.all(10),
+                        border=ft.Border.all(1, C_WARNING),
+                        content=ft.Column(
+                            spacing=6,
+                            controls=[
+                                ft.Text(
+                                    "💡 Anda belum menandai kata sebagai 'Sudah Hafal'.",
+                                    size=12,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=C_WARNING,
+                                ),
+                                ft.Text(
+                                    "Anda dapat menandai 5 kata pertama secara instan untuk mencoba latihan, atau memilih sumber 'Semua 2000 Kata'.",
+                                    size=11,
+                                    color=C_TEXT_LIGHT,
+                                ),
+                                ft.Row(
+                                    spacing=8,
+                                    controls=[
+                                        ft.Button(
+                                            content="⚡ Tandai 5 Kata Pertama",
+                                            bgcolor=C_PRIMARY,
+                                            color=C_WHITE,
+                                            on_click=quick_seed_5_memorized,
+                                        ),
+                                        ft.Button(
+                                            content="Pakai Semua Kata",
+                                            bgcolor=C_MUTED,
+                                            color=C_TEXT_LIGHT,
+                                            on_click=lambda e: self._set_quiz_opt(source="semua"),
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    )
+                )
+
             return ft.ListView(
                 expand=True,
                 spacing=12,
+                padding=ft.Padding.only(bottom=24),
                 controls=[
                     ft.Container(
-                        bgcolor=C_CARD_DARK,
+                        gradient=dark_card_gradient(),
                         padding=ft.Padding.all(16),
-                        border_radius=ft.BorderRadius.all(14),
+                        border_radius=ft.BorderRadius.all(15),
                         border=ft.Border.all(1, C_PRIMARY),
+                        shadow=card_shadow(),
                         content=ft.Column(
                             spacing=12,
                             controls=[
                                 ft.Row(
-                                    spacing=8,
+                                    spacing=10,
                                     controls=[
-                                        ft.Icon(ft.Icons.QUIZ_ROUNDED, color=C_SECONDARY, size=24),
-                                        ft.Text("Latihan & Tebakan Kosakata", size=16, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                        ft.Container(
+                                            width=36,
+                                            height=36,
+                                            bgcolor=C_PRIMARY,
+                                            border_radius=ft.BorderRadius.all(10),
+                                            alignment=ft.Alignment.CENTER,
+                                            content=ft.Icon(ft.Icons.QUIZ_ROUNDED, color=C_WHITE, size=20),
+                                        ),
+                                        ft.Column(
+                                            spacing=1,
+                                            expand=True,
+                                            controls=[
+                                                ft.Text("Latihan & Tebakan Kosakata", size=16, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                                ft.Text(
+                                                    f"Total Kuis Diselesaikan: {v_sum['total_quizzes']} Sesi • Rata-rata Skor: {v_sum['avg_quiz_score']}%",
+                                                    size=11,
+                                                    color=C_SECONDARY,
+                                                ),
+                                            ],
+                                        ),
                                     ],
                                 ),
                                 ft.Text(
-                                    "Uji daya ingat kosakata yang sudah Anda hafal! Hasil latihan otomatis tercatat di Tracker Bulanan dan Tahunan.",
+                                    "Uji ingatan kosakata yang telah Anda hafal! Setiap sesi tebakan akan tercatat otomatis pada grafik Tracker Bulanan dan Tahunan.",
                                     size=12,
                                     color=C_TEXT_LIGHT,
                                 ),
+                                *empty_hafal_banner,
                                 ft.Divider(color=C_MUTED),
-                                ft.Text("1. Pilih Sumber Kosakata:", size=13, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
+                                ft.Text("1. Pilih Sumber Soal Kosakata:", size=12.5, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
                                 ft.Row(
                                     spacing=6,
                                     wrap=True,
@@ -1245,13 +1702,13 @@ class MyLifeApp:
                                             lambda: self._set_quiz_opt(source="belajar_hafal"),
                                         ),
                                         self._choice_chip(
-                                            f"Semua 2000 Kata",
+                                            "Semua 2000 Kata",
                                             self.quiz_source == "semua",
                                             lambda: self._set_quiz_opt(source="semua"),
                                         ),
                                     ],
                                 ),
-                                ft.Text("2. Pilih Mode Tebakan:", size=13, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
+                                ft.Text("2. Pilih Mode Permainan Tebakan:", size=12.5, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
                                 ft.Row(
                                     spacing=6,
                                     wrap=True,
@@ -1267,14 +1724,14 @@ class MyLifeApp:
                                             lambda: self._set_quiz_opt(mode="arti_ke_inggris"),
                                         ),
                                         self._choice_chip(
-                                            "Ketik Kata Inggris (Spelling)",
+                                            "Ketik Kata (Spelling Test)",
                                             self.quiz_mode == "ketik_kata",
                                             lambda: self._set_quiz_opt(mode="ketik_kata"),
                                         ),
                                     ],
                                 ),
                                 ft.Button(
-                                    content="Mulai Tebakan Sekarang 🚀",
+                                    content="Mulai Sesi Tebakan 🚀",
                                     bgcolor=C_PRIMARY,
                                     color=C_WHITE,
                                     on_click=start_new_quiz,
@@ -1289,19 +1746,24 @@ class MyLifeApp:
         if self.quiz_current_idx >= len(self.quiz_questions):
             total_q = len(self.quiz_questions)
             score_pct = (self.quiz_correct_count / total_q * 100.0) if total_q > 0 else 0.0
+            grade_msg = "Luar Biasa! Penguasaan Sangat Baik 🌟" if score_pct >= 80 else ("Bagus! Terus Tingkatkan 💪" if score_pct >= 60 else "Jangan Menyerah! Mari Ulangi Flashcard 📖")
             return ft.Container(
-                bgcolor=C_CARD_DARK,
+                gradient=dark_card_gradient(),
                 padding=ft.Padding.all(24),
-                border_radius=ft.BorderRadius.all(16),
+                border_radius=ft.BorderRadius.all(18),
+                border=ft.Border.all(1.5, C_SECONDARY),
                 alignment=ft.Alignment.CENTER,
                 content=ft.Column(
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    alignment=ft.MainAxisAlignment.CENTER,
                     spacing=12,
                     controls=[
-                        ft.Icon(ft.Icons.EMOJI_EVENTS_ROUNDED, color=C_WARNING, size=56),
-                        ft.Text("Hasil Latihan & Tebakan!", size=20, weight=ft.FontWeight.BOLD, color=C_WHITE),
-                        ft.Text(f"Skor Anda: {score_pct:.0f}%", size=28, weight=ft.FontWeight.BOLD, color=C_SUCCESS if score_pct >= 70 else C_WARNING),
-                        ft.Text(f"Benar {self.quiz_correct_count} dari {total_q} soal", size=14, color=C_TEXT_LIGHT),
+                        ft.Icon(ft.Icons.EMOJI_EVENTS_ROUNDED, color=C_WARNING, size=60),
+                        ft.Text("Sesi Tebakan Selesai!", size=20, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                        ft.Text(f"{score_pct:.0f}%", size=38, weight=ft.FontWeight.BOLD, color=C_SUCCESS if score_pct >= 70 else C_WARNING),
+                        ft.Text(f"Jawaban Benar: {self.quiz_correct_count} dari {total_q} Soal", size=14, weight=ft.FontWeight.W_600, color=C_TEXT_LIGHT),
+                        ft.Text(grade_msg, size=12, color=C_SECONDARY, text_align=ft.TextAlign.CENTER),
+                        ft.Divider(color=C_MUTED),
                         ft.Row(
                             spacing=10,
                             alignment=ft.MainAxisAlignment.CENTER,
@@ -1326,25 +1788,30 @@ class MyLifeApp:
 
         q_item = self.quiz_questions[self.quiz_current_idx]
         total_q = len(self.quiz_questions)
+        q_desc, q_ex = parse_penjelasan(q_item.get("penjelasan", ""))
 
-        def submit_answer(is_right: bool, user_ans: str = ""):
+        def submit_answer(is_right: bool, selected_opt_id=None):
             if self.quiz_answered:
                 return
             self.quiz_answered = True
+            self.quiz_selected_opt_id = selected_opt_id
+            self.quiz_is_last_correct = is_right
             self.db.record_quiz_answer(q_item["id"], is_right)
             if is_right:
                 self.quiz_correct_count += 1
-                self.quiz_feedback_text = f"✅ BENAR! {q_item['word']} = {q_item['arti']}\n{q_item['penjelasan']}"
+                self.quiz_feedback_title = f"✅ JAWABAN BENAR! — {q_item['word']} ({q_item['pos_level']})"
                 self.quiz_feedback_color = C_SUCCESS
             else:
-                self.quiz_feedback_text = f"❌ KURANG TEPAT! Jawaban benar: {q_item['word']} — {q_item['arti']}\n{q_item['penjelasan']}"
+                self.quiz_feedback_title = f"❌ KURANG TEPAT! Jawaban: {q_item['word']} ({q_item['pos_level']})"
                 self.quiz_feedback_color = C_DANGER
+            self.quiz_feedback_desc = f"Arti: {q_item['arti']}\n{q_desc}"
+            self.quiz_feedback_ex = q_ex
             self.render()
 
         def next_question(e):
             self.quiz_current_idx += 1
             self.quiz_answered = False
-            self.quiz_feedback_text = ""
+            self.quiz_selected_opt_id = None
             if self.quiz_current_idx >= len(self.quiz_questions):
                 self.db.record_quiz_session(
                     self.quiz_mode,
@@ -1354,46 +1821,83 @@ class MyLifeApp:
                 )
             self.render()
 
-        # Bangun pilihan jawaban / input sesuai mode
         answer_controls = []
         if self.quiz_mode in ("pilihan_ganda", "arti_ke_inggris"):
-            # Buat 4 opsi deterministik untuk soal saat ini
-            rng = random.Random(q_item["id"] + self.quiz_current_idx * 37)
-            pool = [d for d in self.quiz_distractors if d["id"] != q_item["id"]]
+            rng = random.Random(q_item["id"] + self.quiz_current_idx * 41)
+            pool = [d for d in self.quiz_distractors if d["id"] != q_item["id"] and d["arti"] != q_item["arti"]]
             wrong_opts = rng.sample(pool, min(3, len(pool)))
             all_opts = wrong_opts + [q_item]
             rng.shuffle(all_opts)
 
-            for opt in all_opts:
+            letters = ["A", "B", "C", "D"]
+            for idx_opt, opt in enumerate(all_opts):
                 is_correct_opt = opt["id"] == q_item["id"]
+                is_selected_opt = opt["id"] == self.quiz_selected_opt_id
                 label_txt = opt["arti"] if self.quiz_mode == "pilihan_ganda" else f"{opt['word']} ({opt['pos_level']})"
-                btn_bg = C_MUTED
+
+                btn_bg = C_CARD_DARK
+                border_col = C_MUTED
+                badge_bg = C_MUTED
                 if self.quiz_answered:
-                    btn_bg = C_PRIMARY if is_correct_opt else C_BG_DEEP
+                    if is_correct_opt:
+                        btn_bg = "#143828"
+                        border_col = C_SUCCESS
+                        badge_bg = C_SUCCESS
+                    elif is_selected_opt and not is_correct_opt:
+                        btn_bg = "#3B1822"
+                        border_col = C_DANGER
+                        badge_bg = C_DANGER
+
+                letter_str = letters[idx_opt] if idx_opt < len(letters) else "•"
                 answer_controls.append(
                     ft.Container(
                         bgcolor=btn_bg,
-                        padding=ft.Padding.all(12),
-                        border_radius=ft.BorderRadius.all(10),
-                        border=ft.Border.all(1, C_SECONDARY if (self.quiz_answered and is_correct_opt) else C_MUTED),
-                        on_click=lambda e, right=is_correct_opt: submit_answer(right),
-                        content=ft.Text(label_txt, size=13, color=C_WHITE, weight=ft.FontWeight.W_500),
+                        padding=ft.Padding.symmetric(horizontal=12, vertical=11),
+                        border_radius=ft.BorderRadius.all(12),
+                        border=ft.Border.all(1.5 if (self.quiz_answered and (is_correct_opt or is_selected_opt)) else 1, border_col),
+                        on_click=lambda e, right=is_correct_opt, oid=opt["id"]: submit_answer(right, oid),
+                        content=ft.Row(
+                            spacing=10,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            controls=[
+                                ft.Container(
+                                    width=26,
+                                    height=26,
+                                    bgcolor=badge_bg,
+                                    border_radius=ft.BorderRadius.all(8),
+                                    alignment=ft.Alignment.CENTER,
+                                    content=ft.Text(
+                                        letter_str,
+                                        size=11.5,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=C_BG_DEEP if (self.quiz_answered and is_correct_opt) else C_WHITE,
+                                    ),
+                                ),
+                                ft.Text(label_txt, size=13, color=C_WHITE, weight=ft.FontWeight.W_500, expand=True),
+                            ],
+                        ),
                     )
                 )
         else:
-            # Mode Ketik Kata Inggris
+            target_clean = q_item["word"].split("(")[0].strip()
             tf_guess = ft.TextField(
-                label=f"Ketik kata Inggris (Huruf awal: '{q_item['word'][0]}', {len(q_item['word'])} huruf)",
+                label=f"Ketik kata Inggris (Awalan: '{target_clean[0]}', {len(target_clean)} huruf)",
                 color=C_WHITE,
                 bgcolor=C_MUTED,
                 border_color=C_SECONDARY,
+                border_radius=ft.BorderRadius.all(10),
+                disabled=self.quiz_answered,
             )
 
             def check_typed(e):
                 typed = (tf_guess.value or "").strip().lower()
-                target_clean = q_item["word"].split("(")[0].strip().lower()
-                is_right = typed == target_clean or typed == q_item["word"].strip().lower()
-                submit_answer(is_right, typed)
+                if not typed:
+                    self.notify("Ketik jawaban Anda terlebih dahulu!", C_WARNING)
+                    return
+                is_right = typed == target_clean.lower() or typed == q_item["word"].strip().lower()
+                submit_answer(is_right, -1)
+
+            tf_guess.on_submit = check_typed
 
             answer_controls.extend([
                 tf_guess,
@@ -1401,46 +1905,68 @@ class MyLifeApp:
                     content="Periksa Jawaban ✔️",
                     bgcolor=C_PRIMARY,
                     color=C_WHITE,
+                    disabled=self.quiz_answered,
                     on_click=check_typed,
                 ),
             ])
 
         prompt_title = (
-            f"Apa arti dari kata '{q_item['word']}' ({q_item['pos_level']})?"
+            f"Apa arti Bahasa Indonesia dari kata:\n\"{q_item['word']}\"?"
             if self.quiz_mode == "pilihan_ganda"
-            else f"Kata bahasa Inggris manakah yang memiliki arti:\n\"{q_item['arti']}\"?"
+            else f"Kata Bahasa Inggris manakah yang memiliki arti:\n\"{q_item['arti']}\"?"
         )
 
         return ft.ListView(
             expand=True,
             spacing=10,
-            padding=ft.Padding.only(bottom=30),
+            padding=ft.Padding.only(bottom=24),
             controls=[
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
                         ft.Text(f"Soal {self.quiz_current_idx + 1} / {total_q}", size=13, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
-                        ft.Text(f"Skor Sementara: {self.quiz_correct_count} Benar", size=13, weight=ft.FontWeight.BOLD, color=C_SUCCESS),
+                        ft.Container(
+                            bgcolor=C_CARD_DARK,
+                            padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+                            border_radius=ft.BorderRadius.all(10),
+                            border=ft.Border.all(1, C_SUCCESS),
+                            content=ft.Text(f"Skor: {self.quiz_correct_count} Benar", size=11.5, weight=ft.FontWeight.BOLD, color=C_SUCCESS),
+                        ),
                         ft.TextButton(
-                            content="Keluar Kuis",
+                            content="Akhiri Kuis ✖",
                             on_click=lambda e: self._stop_quiz(),
                         ),
                     ],
                 ),
+                ft.ProgressBar(
+                    value=(self.quiz_current_idx + 1) / max(1, total_q),
+                    bar_height=6,
+                    color=C_PRIMARY,
+                    bgcolor=C_MUTED,
+                    border_radius=ft.BorderRadius.all(4),
+                ),
                 ft.Container(
-                    bgcolor=C_CARD_DARK,
+                    gradient=dark_card_gradient(),
                     padding=ft.Padding.all(16),
                     border_radius=ft.BorderRadius.all(14),
                     border=ft.Border.all(1, C_PRIMARY),
                     content=ft.Column(
                         spacing=8,
                         controls=[
-                            ft.Text(prompt_title, size=16, weight=ft.FontWeight.BOLD, color=C_WHITE),
-                            ft.Text(
-                                f"Petunjuk Kelas & Level: {q_item['pos_level']}",
-                                size=12,
-                                color=C_SECONDARY,
+                            ft.Row(
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                controls=[
+                                    ft.Text("PERTANYAAN KUIS", size=10.5, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
+                                    ft.Container(
+                                        bgcolor=C_MUTED,
+                                        padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                                        border_radius=ft.BorderRadius.all(6),
+                                        content=ft.Text(f"Kelas & Level: {q_item['pos_level']}", size=10.5, color=C_TEXT_LIGHT),
+                                    ),
+                                ],
                             ),
+                            ft.Text(prompt_title, size=15.5, weight=ft.FontWeight.BOLD, color=C_WHITE),
                         ],
                     ),
                 ),
@@ -1448,13 +1974,27 @@ class MyLifeApp:
                 ft.Container(
                     visible=self.quiz_answered,
                     bgcolor=C_CARD_DARK,
-                    padding=ft.Padding.all(12),
-                    border_radius=ft.BorderRadius.all(12),
-                    border=ft.Border.all(1, self.quiz_feedback_color),
+                    padding=ft.Padding.all(14),
+                    border_radius=ft.BorderRadius.all(14),
+                    border=ft.Border.all(1.5, self.quiz_feedback_color),
                     content=ft.Column(
                         spacing=8,
                         controls=[
-                            ft.Text(self.quiz_feedback_text, size=12, color=C_TEXT_LIGHT),
+                            ft.Text(self.quiz_feedback_title, size=13.5, weight=ft.FontWeight.BOLD, color=self.quiz_feedback_color),
+                            ft.Text(self.quiz_feedback_desc, size=12, color=C_TEXT_LIGHT),
+                            *(
+                                [
+                                    ft.Container(
+                                        bgcolor=C_BG_DEEP,
+                                        padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+                                        border_radius=ft.BorderRadius.all(8),
+                                        border=ft.Border.all(1, C_MUTED),
+                                        content=ft.Text(f'💬 Contoh: "{self.quiz_feedback_ex}"', size=11, italic=True, color=C_SECONDARY),
+                                    )
+                                ]
+                                if self.quiz_feedback_ex
+                                else []
+                            ),
                             ft.Button(
                                 content="Soal Berikutnya ▶" if self.quiz_current_idx + 1 < total_q else "Lihat Hasil Akhir 🏆",
                                 bgcolor=C_PRIMARY,
@@ -1474,7 +2014,12 @@ class MyLifeApp:
             border_radius=ft.BorderRadius.all(10),
             border=ft.Border.all(1, C_SECONDARY if active else C_MUTED),
             on_click=lambda e: on_tap(),
-            content=ft.Text(text, size=12, color=C_WHITE if active else C_TEXT_LIGHT, weight=ft.FontWeight.BOLD if active else ft.FontWeight.NORMAL),
+            content=ft.Text(
+                text,
+                size=11.5,
+                color=C_WHITE if active else C_TEXT_LIGHT,
+                weight=ft.FontWeight.BOLD if active else ft.FontWeight.NORMAL,
+            ),
         )
 
     def _set_quiz_opt(self, source: str = None, mode: str = None):
@@ -1497,7 +2042,7 @@ class MyLifeApp:
             self.render()
 
         sub_bar = self.build_subtab_bar(
-            ["Tracker Hafalan Bulanan", "Tracker Hafalan Tahunan"],
+            ["Tracker Bulanan", "Tracker Tahunan"],
             self.tracker_subtab,
             switch_sub,
         )
@@ -1544,33 +2089,34 @@ class MyLifeApp:
                 )
             )
 
-        # Daily activity bars in this month
         daily_rows = []
         if m_data["daily_memorized"]:
+            max_daily = max(list(m_data["daily_memorized"].values()) + [5])
             for dt_str, cnt in m_data["daily_memorized"].items():
                 daily_rows.append(
                     ft.Row(
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            ft.Text(dt_str, size=12, color=C_TEXT_LIGHT),
+                            ft.Text(dt_str, size=11.5, color=C_TEXT_LIGHT, width=85),
                             ft.Container(
                                 expand=True,
-                                margin=ft.Margin.symmetric(horizontal=10),
+                                margin=ft.Margin.symmetric(horizontal=8),
                                 content=ft.ProgressBar(
-                                    value=min(1.0, cnt / 20.0),
+                                    value=min(1.0, cnt / max_daily),
                                     bar_height=8,
                                     color=C_SECONDARY,
                                     bgcolor=C_MUTED,
+                                    border_radius=ft.BorderRadius.all(4),
                                 ),
                             ),
-                            ft.Text(f"{cnt} kata", size=12, weight=ft.FontWeight.BOLD, color=C_SUCCESS),
+                            ft.Text(f"+{cnt} kata", size=11.5, weight=ft.FontWeight.BOLD, color=C_SUCCESS),
                         ],
                     )
                 )
         else:
             daily_rows.append(ft.Text("Belum ada kata yang ditandai hafal pada bulan ini.", size=12, color=C_SECONDARY))
 
-        # Memorized words list in this month
         word_items = []
         for w in m_data["words_list"]:
             word_items.append(
@@ -1590,7 +2136,12 @@ class MyLifeApp:
                                     ft.Text(w["arti"], size=11, color=C_TEXT_LIGHT),
                                 ],
                             ),
-                            ft.Text(w["memorized_date"] or "", size=10, color=C_SECONDARY),
+                            ft.Container(
+                                bgcolor=C_CARD_DARK,
+                                padding=ft.Padding.symmetric(horizontal=7, vertical=3),
+                                border_radius=ft.BorderRadius.all(6),
+                                content=ft.Text(w["memorized_date"] or "", size=10, color=C_SECONDARY),
+                            ),
                         ],
                     ),
                 )
@@ -1599,29 +2150,34 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
-            padding=ft.Padding.only(bottom=30),
+            padding=ft.Padding.only(bottom=24),
             controls=[
                 self.build_period_selector(show_month=True),
                 ft.Container(
-                    bgcolor=C_CARD_DARK,
+                    gradient=dark_card_gradient(),
                     padding=ft.Padding.all(14),
-                    border_radius=ft.BorderRadius.all(14),
+                    border_radius=ft.BorderRadius.all(15),
                     border=ft.Border.all(1, C_PRIMARY),
+                    shadow=card_shadow(),
                     content=ft.Column(
-                        spacing=8,
+                        spacing=10,
                         controls=[
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                 controls=[
                                     ft.Text(
-                                        f"Progress Hafalan {MONTH_NAMES_ID[self.selected_month]} {self.selected_year}",
-                                        size=14,
+                                        f"Tracker {MONTH_NAMES_ID[self.selected_month]} {self.selected_year}",
+                                        size=14.5,
                                         weight=ft.FontWeight.BOLD,
                                         color=C_WHITE,
                                     ),
-                                    ft.TextButton(
-                                        content=f"Target: {m_data['monthly_target']} ✏️",
+                                    ft.Container(
+                                        bgcolor=C_MUTED,
+                                        padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+                                        border_radius=ft.BorderRadius.all(8),
                                         on_click=edit_monthly_target,
+                                        content=ft.Text(f"Target: {m_data['monthly_target']} ✏️", size=11, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
                                     ),
                                 ],
                             ),
@@ -1641,10 +2197,15 @@ class MyLifeApp:
                             ft.Row(
                                 spacing=8,
                                 controls=[
-                                    self._stat_mini_box("Sesi Tebakan", str(m_data["quiz_sessions"]), C_TEXT_LIGHT),
-                                    self._stat_mini_box("Soal Dijawab", str(m_data["quiz_total_q"]), C_SECONDARY),
-                                    self._stat_mini_box("Jawaban Benar", str(m_data["quiz_correct_q"]), C_SUCCESS),
-                                    self._stat_mini_box("Rata2 Skor", f"{m_data['quiz_avg_pct']}%", C_WARNING),
+                                    self._stat_mini_box("Sesi Tebakan", f"{m_data['quiz_sessions']} Sesi", C_TEXT_LIGHT, ft.Icons.QUIZ_OUTLINED),
+                                    self._stat_mini_box("Soal Dijawab", f"{m_data['quiz_total_q']} Soal", C_SECONDARY, ft.Icons.LIST_ALT_ROUNDED),
+                                ],
+                            ),
+                            ft.Row(
+                                spacing=8,
+                                controls=[
+                                    self._stat_mini_box("Jawaban Benar", f"{m_data['quiz_correct_q']} Benar", C_SUCCESS, ft.Icons.CHECK_CIRCLE_OUTLINE),
+                                    self._stat_mini_box("Akurasi Kuis", f"{m_data['quiz_avg_pct']}%", C_WARNING, ft.Icons.INSIGHTS_ROUNDED),
                                 ],
                             ),
                         ],
@@ -1654,10 +2215,11 @@ class MyLifeApp:
                     bgcolor=C_CARD_DARK,
                     padding=ft.Padding.all(14),
                     border_radius=ft.BorderRadius.all(14),
+                    border=ft.Border.all(1, C_MUTED),
                     content=ft.Column(
                         spacing=8,
                         controls=[
-                            ft.Text("📅 Log Hafalan Harian Bulan Ini", size=14, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
+                            ft.Text("📅 Grafik Aktivitas Hafalan Harian", size=13.5, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
                             ft.Column(spacing=6, controls=daily_rows),
                         ],
                     ),
@@ -1666,13 +2228,14 @@ class MyLifeApp:
                     bgcolor=C_CARD_DARK,
                     padding=ft.Padding.all(14),
                     border_radius=ft.BorderRadius.all(14),
+                    border=ft.Border.all(1, C_MUTED),
                     content=ft.Column(
                         spacing=8,
                         controls=[
-                            ft.Text(f"✅ Daftar Kata yang Dihafal ({len(word_items)})", size=14, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
+                            ft.Text(f"✅ Kosakata Dihafal Bulan Ini ({len(word_items)})", size=13.5, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
                             ft.Column(
                                 spacing=6,
-                                controls=word_items if word_items else [ft.Text("Belum ada kata yang dihafal bulan ini.", size=12, color=C_SECONDARY)],
+                                controls=word_items if word_items else [ft.Text("Belum ada kata yang dihafal pada periode bulan ini.", size=12, color=C_SECONDARY)],
                             ),
                         ],
                     ),
@@ -1683,6 +2246,38 @@ class MyLifeApp:
     def build_vocab_yearly_tracker_subview(self) -> ft.Control:
         y_data = self.db.get_vocab_yearly_tracker(self.selected_year)
         max_m = max([m["memorized"] for m in y_data["months"]] + [10])
+
+        # Visual 12-Month Vertical Bar Chart
+        bar_columns = []
+        for m_info in y_data["months"]:
+            m_idx = m_info["month"]
+            cnt = m_info["memorized"]
+            bar_h = max(6, int(round((cnt / max_m) * 75))) if cnt > 0 else 4
+            is_cur_m = m_idx == self.selected_month
+            bar_columns.append(
+                ft.Column(
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    alignment=ft.MainAxisAlignment.END,
+                    spacing=3,
+                    expand=True,
+                    controls=[
+                        ft.Text(str(cnt) if cnt > 0 else "", size=8.5, color=C_SUCCESS, weight=ft.FontWeight.BOLD),
+                        ft.Container(
+                            width=14,
+                            height=bar_h,
+                            bgcolor=C_SUCCESS if cnt > 0 else (C_SECONDARY if is_cur_m else C_MUTED),
+                            border_radius=ft.BorderRadius.all(4),
+                            tooltip=f"{MONTH_NAMES_ID[m_idx]}: {cnt} Kata",
+                        ),
+                        ft.Text(
+                            MONTH_SHORT_ID[m_idx],
+                            size=9,
+                            weight=ft.FontWeight.BOLD if is_cur_m else ft.FontWeight.NORMAL,
+                            color=C_WHITE if is_cur_m else C_SECONDARY,
+                        ),
+                    ],
+                )
+            )
 
         month_rows = []
         for m_info in y_data["months"]:
@@ -1695,6 +2290,8 @@ class MyLifeApp:
                     bgcolor=C_BG_DEEP,
                     padding=ft.Padding.symmetric(horizontal=10, vertical=8),
                     border_radius=ft.BorderRadius.all(8),
+                    border=ft.Border.all(1, C_PRIMARY if m_idx == self.selected_month else C_MUTED),
+                    on_click=lambda e, mi=m_idx: (setattr(self, "selected_month", mi), setattr(self, "tracker_subtab", 0), self.render()),
                     content=ft.Column(
                         spacing=4,
                         controls=[
@@ -1702,15 +2299,16 @@ class MyLifeApp:
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
                                     ft.Text(MONTH_NAMES_ID[m_idx], size=12, weight=ft.FontWeight.BOLD, color=C_WHITE, width=90),
-                                    ft.Text(f"{cnt} Kata Hafal", size=12, weight=ft.FontWeight.BOLD, color=C_SUCCESS),
+                                    ft.Text(f"{cnt} Kata Hafal", size=12, weight=ft.FontWeight.BOLD, color=C_SUCCESS if cnt > 0 else C_TEXT_LIGHT),
                                     ft.Text(f"{q_cnt} Kuis ({avg_s}%)", size=11, color=C_SECONDARY),
                                 ],
                             ),
                             ft.ProgressBar(
                                 value=min(1.0, cnt / max_m),
-                                bar_height=6,
+                                bar_height=5,
                                 color=C_PRIMARY if cnt > 0 else C_MUTED,
                                 bgcolor=C_MUTED,
+                                border_radius=ft.BorderRadius.all(3),
                             ),
                         ],
                     ),
@@ -1723,31 +2321,44 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
-            padding=ft.Padding.only(bottom=30),
+            padding=ft.Padding.only(bottom=24),
             controls=[
                 self.build_period_selector(show_month=False),
                 ft.Container(
-                    bgcolor=C_CARD_DARK,
+                    gradient=dark_card_gradient(),
                     padding=ft.Padding.all(14),
-                    border_radius=ft.BorderRadius.all(14),
+                    border_radius=ft.BorderRadius.all(15),
                     border=ft.Border.all(1, C_PRIMARY),
+                    shadow=card_shadow(),
                     content=ft.Column(
                         spacing=10,
                         controls=[
-                            ft.Text(f"🏆 Ringkasan Hafalan Tahunan ({self.selected_year})", size=15, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                            ft.Text(f"🏆 Ringkasan Hafalan Tahunan ({self.selected_year})", size=14.5, weight=ft.FontWeight.BOLD, color=C_WHITE),
                             ft.Row(
                                 spacing=8,
                                 controls=[
-                                    self._stat_mini_box("Hafal Tahun Ini", f"{y_data['total_year_memorized']} Kata", C_SUCCESS),
-                                    self._stat_mini_box("Total Kuis", f"{y_data['total_year_quizzes']} Sesi", C_SECONDARY),
+                                    self._stat_mini_box("Total Hafal Tahun Ini", f"{y_data['total_year_memorized']} Kata", C_SUCCESS, ft.Icons.WORKSPACE_PREMIUM_ROUNDED),
+                                    self._stat_mini_box("Total Sesi Kuis", f"{y_data['total_year_quizzes']} Sesi", C_SECONDARY, ft.Icons.QUIZ_ROUNDED),
                                 ],
                             ),
                             ft.Row(
                                 spacing=8,
                                 controls=[
-                                    self._stat_mini_box("Level B2 Dikuasai", f"{y_data['b2_hafal']}/{y_data['b2_total']} ({b2_pct:.1f}%)", C_TEXT_LIGHT),
-                                    self._stat_mini_box("Level C1 Dikuasai", f"{y_data['c1_hafal']}/{y_data['c1_total']} ({c1_pct:.1f}%)", C_WARNING),
+                                    self._stat_mini_box("Penguasaan Level B2", f"{y_data['b2_hafal']}/{y_data['b2_total']} ({b2_pct:.1f}%)", C_TEXT_LIGHT),
+                                    self._stat_mini_box("Penguasaan Level C1", f"{y_data['c1_hafal']}/{y_data['c1_total']} ({c1_pct:.1f}%)", C_WARNING),
                                 ],
+                            ),
+                            ft.Container(
+                                bgcolor=C_BG_DEEP,
+                                padding=ft.Padding.only(left=8, right=8, top=12, bottom=8),
+                                border_radius=ft.BorderRadius.all(12),
+                                border=ft.Border.all(1, C_MUTED),
+                                height=120,
+                                content=ft.Row(
+                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                    vertical_alignment=ft.CrossAxisAlignment.END,
+                                    controls=bar_columns,
+                                ),
                             ),
                         ],
                     ),
@@ -1756,10 +2367,11 @@ class MyLifeApp:
                     bgcolor=C_CARD_DARK,
                     padding=ft.Padding.all(14),
                     border_radius=ft.BorderRadius.all(14),
+                    border=ft.Border.all(1, C_MUTED),
                     content=ft.Column(
                         spacing=8,
                         controls=[
-                            ft.Text("📊 Rekapitulasi Hafalan & Tebakan 12 Bulan (Jan – Des)", size=14, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
+                            ft.Text("📊 Rincian Hafalan & Tebakan 12 Bulan (Ketuk Bulan untuk Detail)", size=13, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
                             ft.Column(spacing=6, controls=month_rows),
                         ],
                     ),
@@ -1791,8 +2403,16 @@ class MyLifeApp:
         return ft.Column(expand=True, spacing=6, controls=[sub_bar, content])
 
     def build_transactions_subview(self) -> ft.Control:
-        tx_list = self.db.get_transactions(year=self.selected_year, month=self.selected_month)
+        tx_list = self.db.get_transactions(
+            year=self.selected_year,
+            month=self.selected_month,
+            tipe_filter=self.tx_tipe_filter,
+        )
         all_cats = self.db.get_finance_categories()
+
+        def set_tx_filter(val: str):
+            self.tx_tipe_filter = val
+            self.render()
 
         def open_add_tx_dialog(e):
             today_str = datetime.date.today().strftime("%Y-%m-%d")
@@ -1871,12 +2491,7 @@ class MyLifeApp:
             )
 
         def open_edit_tx_dialog(tx: dict):
-            tf_date = ft.TextField(
-                label="Tanggal (YYYY-MM-DD)",
-                value=tx["tanggal"],
-                color=C_WHITE,
-                bgcolor=C_MUTED,
-            )
+            tf_date = ft.TextField(label="Tanggal (YYYY-MM-DD)", value=tx["tanggal"], color=C_WHITE, bgcolor=C_MUTED)
 
             dd_tipe = ft.Dropdown(
                 label="Tipe Transaksi",
@@ -1918,12 +2533,7 @@ class MyLifeApp:
 
             dd_tipe.on_select = on_tipe_change
 
-            tf_desc = ft.TextField(
-                label="Deskripsi",
-                value=tx["deskripsi"] or "",
-                color=C_WHITE,
-                bgcolor=C_MUTED,
-            )
+            tf_desc = ft.TextField(label="Deskripsi", value=tx["deskripsi"] or "", color=C_WHITE, bgcolor=C_MUTED)
             tf_total = ft.TextField(
                 label="Nominal Rp",
                 value=str(int(round(float(tx["total"])))),
@@ -1931,12 +2541,7 @@ class MyLifeApp:
                 color=C_WHITE,
                 bgcolor=C_MUTED,
             )
-            tf_notes = ft.TextField(
-                label="Notes (Opsional)",
-                value=tx["notes"] or "",
-                color=C_WHITE,
-                bgcolor=C_MUTED,
-            )
+            tf_notes = ft.TextField(label="Notes (Opsional)", value=tx["notes"] or "", color=C_WHITE, bgcolor=C_MUTED)
 
             def save_updated_tx(ev):
                 try:
@@ -1964,11 +2569,7 @@ class MyLifeApp:
                 ft.AlertDialog(
                     bgcolor=C_CARD_DARK,
                     title=ft.Text("Edit Transaksi Keuangan", color=C_WHITE, weight=ft.FontWeight.BOLD),
-                    content=ft.Column(
-                        tight=True,
-                        spacing=8,
-                        controls=[tf_date, dd_tipe, dd_kat, tf_desc, tf_total, tf_notes],
-                    ),
+                    content=ft.Column(tight=True, spacing=8, controls=[tf_date, dd_tipe, dd_kat, tf_desc, tf_total, tf_notes]),
                     actions=[
                         ft.TextButton(content="Batal", on_click=lambda ev: self.page.pop_dialog()),
                         ft.Button(content="Simpan Perubahan", bgcolor=C_PRIMARY, color=C_WHITE, on_click=save_updated_tx),
@@ -1980,6 +2581,26 @@ class MyLifeApp:
             self.db.delete_transaction(tx_id)
             self.notify("Transaksi dihapus.", C_MUTED)
             self.render()
+
+        filter_chips = []
+        for code, lbl in [
+            ("SEMUA", "Semua"),
+            ("PENDAPATAN", "Pendapatan"),
+            ("KEBUTUHAN", "Kebutuhan"),
+            ("KEINGINAN", "Keinginan"),
+            ("TABUNGAN & INVESTASI", "Tabungan"),
+        ]:
+            active = self.tx_tipe_filter == code
+            filter_chips.append(
+                ft.Container(
+                    bgcolor=C_PRIMARY if active else C_MUTED,
+                    padding=ft.Padding.symmetric(horizontal=9, vertical=4),
+                    border_radius=ft.BorderRadius.all(14),
+                    border=ft.Border.all(1, C_SECONDARY if active else C_MUTED),
+                    on_click=lambda e, c=code: set_tx_filter(c),
+                    content=ft.Text(lbl, size=10.5, color=C_WHITE if active else C_TEXT_LIGHT, weight=ft.FontWeight.BOLD if active else ft.FontWeight.NORMAL),
+                )
+            )
 
         tx_cards = []
         for tx in tx_list:
@@ -1994,48 +2615,68 @@ class MyLifeApp:
                     padding=ft.Padding.all(12),
                     border_radius=ft.BorderRadius.all(12),
                     border=ft.Border.all(1, C_MUTED),
-                    on_click=lambda e, t=tx: open_edit_tx_dialog(t),
                     content=ft.Row(
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            ft.Column(
-                                spacing=2,
+                            ft.Container(
                                 expand=True,
-                                controls=[
-                                    ft.Row(
-                                        spacing=6,
-                                        controls=[
-                                            ft.Container(
-                                                bgcolor=C_PRIMARY if is_income else C_MUTED,
-                                                padding=ft.Padding.symmetric(horizontal=6, vertical=2),
-                                                border_radius=ft.BorderRadius.all(6),
-                                                content=ft.Text(t_type, size=9, color=C_WHITE, weight=ft.FontWeight.BOLD),
-                                            ),
-                                            ft.Text(tx["kategori"], size=12, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
-                                            ft.Text(f"• {tx['tanggal']}", size=10, color=C_TEXT_LIGHT),
-                                        ],
-                                    ),
-                                    ft.Text(tx["deskripsi"] or "-", size=13, color=C_WHITE),
-                                    ft.Text(tx["notes"] or "", size=10, color=C_TEXT_LIGHT, visible=bool(tx.get("notes"))),
-                                ],
+                                on_click=lambda e, t=tx: open_edit_tx_dialog(t),
+                                content=ft.Column(
+                                    spacing=3,
+                                    controls=[
+                                        ft.Row(
+                                            spacing=5,
+                                            wrap=True,
+                                            controls=[
+                                                ft.Container(
+                                                    bgcolor=C_PRIMARY if is_income else C_MUTED,
+                                                    padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+                                                    border_radius=ft.BorderRadius.all(6),
+                                                    content=ft.Text(t_type, size=8.5, color=C_WHITE, weight=ft.FontWeight.BOLD),
+                                                ),
+                                                ft.Text(tx["kategori"], size=12, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
+                                                ft.Text(f"• {tx['tanggal']}", size=10, color=C_TEXT_LIGHT),
+                                            ],
+                                        ),
+                                        ft.Text(tx["deskripsi"] or "-", size=13, weight=ft.FontWeight.W_500, color=C_WHITE),
+                                        *(
+                                            [ft.Text(tx["notes"], size=10.5, color=C_TEXT_LIGHT, italic=True)]
+                                            if tx.get("notes")
+                                            else []
+                                        ),
+                                    ],
+                                ),
                             ),
-                            ft.Row(
+                            ft.Column(
+                                horizontal_alignment=ft.CrossAxisAlignment.END,
                                 spacing=2,
                                 controls=[
                                     ft.Text(f"{sign_str}{format_rp(tx['total'])}", size=13, weight=ft.FontWeight.BOLD, color=amt_color),
-                                    ft.IconButton(
-                                        icon=ft.Icons.EDIT_OUTLINED,
-                                        icon_color=C_SECONDARY,
-                                        icon_size=18,
-                                        tooltip="Edit Transaksi",
-                                        on_click=lambda e, t=tx: open_edit_tx_dialog(t),
-                                    ),
-                                    ft.IconButton(
-                                        icon=ft.Icons.DELETE_OUTLINE,
-                                        icon_color=C_DANGER,
-                                        icon_size=18,
-                                        tooltip="Hapus Transaksi",
-                                        on_click=lambda e, tid=tx["id"]: delete_tx(tid),
+                                    ft.Row(
+                                        spacing=2,
+                                        controls=[
+                                            ft.IconButton(
+                                                icon=ft.Icons.EDIT_OUTLINED,
+                                                icon_color=C_SECONDARY,
+                                                icon_size=16,
+                                                width=30,
+                                                height=30,
+                                                style=ft.ButtonStyle(padding=ft.Padding.all(2)),
+                                                tooltip="Edit Transaksi",
+                                                on_click=lambda e, t=tx: open_edit_tx_dialog(t),
+                                            ),
+                                            ft.IconButton(
+                                                icon=ft.Icons.DELETE_OUTLINE,
+                                                icon_color=C_DANGER,
+                                                icon_size=16,
+                                                width=30,
+                                                height=30,
+                                                style=ft.ButtonStyle(padding=ft.Padding.all(2)),
+                                                tooltip="Hapus Transaksi",
+                                                on_click=lambda e, tid=tx["id"]: delete_tx(tid),
+                                            ),
+                                        ],
                                     ),
                                 ],
                             ),
@@ -2049,10 +2690,12 @@ class MyLifeApp:
             spacing=8,
             controls=[
                 self.build_period_selector(show_month=True),
+                ft.Row(spacing=5, wrap=True, controls=filter_chips),
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
-                        ft.Text(f"Riwayat Transaksi ({len(tx_cards)})", size=14, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
+                        ft.Text(f"Riwayat Transaksi ({len(tx_cards)})", size=13.5, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
                         ft.Button(
                             content="+ Tambah Transaksi",
                             bgcolor=C_PRIMARY,
@@ -2064,14 +2707,15 @@ class MyLifeApp:
                 ft.ListView(
                     expand=True,
                     spacing=8,
-                    padding=ft.Padding.only(bottom=30),
+                    padding=ft.Padding.only(bottom=24),
                     controls=tx_cards if tx_cards else [
                         ft.Container(
                             bgcolor=C_CARD_DARK,
                             padding=ft.Padding.all(20),
                             border_radius=ft.BorderRadius.all(12),
+                            border=ft.Border.all(1, C_MUTED),
                             alignment=ft.Alignment.CENTER,
-                            content=ft.Text("Belum ada transaksi pada bulan ini. Klik '+ Tambah Transaksi'.", color=C_SECONDARY),
+                            content=ft.Text("Belum ada transaksi pada filter/periode ini. Klik '+ Tambah Transaksi'.", color=C_SECONDARY, text_align=ft.TextAlign.CENTER),
                         )
                     ],
                 ),
@@ -2092,7 +2736,6 @@ class MyLifeApp:
         pct_tab_act = (ov["tabungan"] / base_income) * 100.0
         pct_rem_act = max(0.0, 100.0 - (pct_keb_act + pct_kei_act + pct_tab_act))
 
-        # Health status indicator
         if ov["selisih"] < 0:
             health_color = C_DANGER
             health_title = "🚨 OVERBUDGET (DEFISIT)"
@@ -2106,17 +2749,16 @@ class MyLifeApp:
             health_title = "✅ KEUANGAN SEHAT & SURPLUS"
             health_desc = f"Arus kas positif! Sisa dana bebas tersimpan {format_rp(ov['selisih'])} ({remain_pct:.1f}%)."
 
-        # Visual multi-segment stacked bar for cash flow allocation
         segments = []
         if pct_keb_act > 0:
             segments.append(
                 ft.Container(
                     expand=max(1, int(round(pct_keb_act * 10))),
                     bgcolor=C_SECONDARY,
-                    height=24,
+                    height=22,
                     tooltip=f"Kebutuhan: {pct_keb_act:.1f}% ({format_rp(ov['kebutuhan'])})",
                     alignment=ft.Alignment.CENTER,
-                    content=ft.Text(f"{pct_keb_act:.0f}%", size=10, weight=ft.FontWeight.BOLD, color=C_WHITE) if pct_keb_act >= 7 else None,
+                    content=ft.Text(f"{pct_keb_act:.0f}%", size=9.5, weight=ft.FontWeight.BOLD, color=C_WHITE) if pct_keb_act >= 8 else None,
                 )
             )
         if pct_kei_act > 0:
@@ -2124,10 +2766,10 @@ class MyLifeApp:
                 ft.Container(
                     expand=max(1, int(round(pct_kei_act * 10))),
                     bgcolor=C_WARNING,
-                    height=24,
+                    height=22,
                     tooltip=f"Keinginan: {pct_kei_act:.1f}% ({format_rp(ov['keinginan'])})",
                     alignment=ft.Alignment.CENTER,
-                    content=ft.Text(f"{pct_kei_act:.0f}%", size=10, weight=ft.FontWeight.BOLD, color=C_BG_DEEP) if pct_kei_act >= 7 else None,
+                    content=ft.Text(f"{pct_kei_act:.0f}%", size=9.5, weight=ft.FontWeight.BOLD, color=C_BG_DEEP) if pct_kei_act >= 8 else None,
                 )
             )
         if pct_tab_act > 0:
@@ -2135,10 +2777,10 @@ class MyLifeApp:
                 ft.Container(
                     expand=max(1, int(round(pct_tab_act * 10))),
                     bgcolor=C_PRIMARY,
-                    height=24,
+                    height=22,
                     tooltip=f"Tabungan: {pct_tab_act:.1f}% ({format_rp(ov['tabungan'])})",
                     alignment=ft.Alignment.CENTER,
-                    content=ft.Text(f"{pct_tab_act:.0f}%", size=10, weight=ft.FontWeight.BOLD, color=C_WHITE) if pct_tab_act >= 7 else None,
+                    content=ft.Text(f"{pct_tab_act:.0f}%", size=9.5, weight=ft.FontWeight.BOLD, color=C_WHITE) if pct_tab_act >= 8 else None,
                 )
             )
         if ov["selisih"] >= 0 and pct_rem_act > 0:
@@ -2146,10 +2788,10 @@ class MyLifeApp:
                 ft.Container(
                     expand=max(1, int(round(pct_rem_act * 10))),
                     bgcolor=C_SUCCESS,
-                    height=24,
+                    height=22,
                     tooltip=f"Sisa Bebas: {pct_rem_act:.1f}% ({format_rp(ov['selisih'])})",
                     alignment=ft.Alignment.CENTER,
-                    content=ft.Text(f"{pct_rem_act:.0f}%", size=10, weight=ft.FontWeight.BOLD, color=C_BG_DEEP) if pct_rem_act >= 7 else None,
+                    content=ft.Text(f"{pct_rem_act:.0f}%", size=9.5, weight=ft.FontWeight.BOLD, color=C_BG_DEEP) if pct_rem_act >= 8 else None,
                 )
             )
         elif ov["selisih"] < 0:
@@ -2158,7 +2800,7 @@ class MyLifeApp:
                 ft.Container(
                     expand=max(1, int(round(deficit_pct * 10))),
                     bgcolor=C_DANGER,
-                    height=24,
+                    height=22,
                     tooltip=f"Defisit: {deficit_pct:.1f}% ({format_rp(abs(ov['selisih']))})",
                     alignment=ft.Alignment.CENTER,
                     content=ft.Text(f"Defisit {deficit_pct:.0f}%", size=9, weight=ft.FontWeight.BOLD, color=C_WHITE),
@@ -2170,7 +2812,7 @@ class MyLifeApp:
                 ft.Container(
                     expand=True,
                     bgcolor=C_MUTED,
-                    height=24,
+                    height=22,
                     alignment=ft.Alignment.CENTER,
                     content=ft.Text("Belum ada alokasi transaksi", size=10, color=C_TEXT_LIGHT),
                 )
@@ -2242,17 +2884,17 @@ class MyLifeApp:
             diff_rp = (target_pct / 100.0 * base_income) - actual_rp
             if label in ("KEBUTUHAN", "KEINGINAN"):
                 if diff_rp >= 0:
-                    status_badge = f"Hemat {format_rp(diff_rp)} ✅"
+                    status_badge = f"Hemat {format_rp_compact(diff_rp)} ✅"
                     status_col = C_SUCCESS
                 else:
-                    status_badge = f"Over {format_rp(abs(diff_rp))} 🚨"
+                    status_badge = f"Over {format_rp_compact(abs(diff_rp))} 🚨"
                     status_col = C_DANGER
             else:
                 if actual_rp >= (target_pct / 100.0 * base_income):
                     status_badge = "Target Tercapai 🌟"
                     status_col = C_SUCCESS
                 else:
-                    status_badge = f"Kurang {format_rp(abs(diff_rp))} ⏳"
+                    status_badge = f"Kurang {format_rp_compact(abs(diff_rp))} ⏳"
                     status_col = C_SECONDARY
 
             return ft.Container(
@@ -2269,7 +2911,7 @@ class MyLifeApp:
                                 ft.Row(
                                     spacing=6,
                                     controls=[
-                                        ft.Text(label, size=12, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                        ft.Text(label, size=11.5, weight=ft.FontWeight.BOLD, color=C_WHITE),
                                         ft.Container(
                                             bgcolor=C_MUTED,
                                             padding=ft.Padding.symmetric(horizontal=6, vertical=2),
@@ -2279,8 +2921,8 @@ class MyLifeApp:
                                     ],
                                 ),
                                 ft.Text(
-                                    f"Target: {target_pct:.0f}% | Aktual: {actual_pct:.1f}% ({format_rp(actual_rp)})",
-                                    size=11,
+                                    f"Tgt {target_pct:.0f}% • Akt {actual_pct:.1f}%",
+                                    size=10.5,
                                     color=C_DANGER if over_budget else C_SECONDARY,
                                     weight=ft.FontWeight.BOLD,
                                 ),
@@ -2293,11 +2935,11 @@ class MyLifeApp:
                             bgcolor=C_MUTED,
                             border_radius=ft.BorderRadius.all(4),
                         ),
+                        ft.Text(f"Realisasi: {format_rp(actual_rp)} dari alokasi {format_rp(target_pct / 100.0 * base_income)}", size=10, color=C_TEXT_LIGHT),
                     ],
                 ),
             )
 
-        # Build category breakdown cards (TARGET vs AKTUAL per kategori)
         cat_sections = []
         for tipe_key in ["PENDAPATAN", "KEBUTUHAN", "KEINGINAN", "TABUNGAN & INVESTASI"]:
             items = ov["breakdown_by_tipe"].get(tipe_key, [])
@@ -2318,7 +2960,7 @@ class MyLifeApp:
                                 ft.Row(
                                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                     controls=[
-                                        ft.Text(f"{it['kategori']}{jt_txt}", size=12, color=C_WHITE, weight=ft.FontWeight.W_500),
+                                        ft.Text(f"{it['kategori']}{jt_txt}", size=12, color=C_WHITE, weight=ft.FontWeight.W_500, expand=True),
                                         ft.Text(f"{format_rp(act)} / {format_rp(tgt)}", size=11, color=C_SECONDARY),
                                     ],
                                 ),
@@ -2339,13 +2981,14 @@ class MyLifeApp:
                     bgcolor=C_CARD_DARK,
                     padding=ft.Padding.all(12),
                     border_radius=ft.BorderRadius.all(12),
+                    border=ft.Border.all(1, C_MUTED),
                     content=ft.Column(
                         spacing=6,
                         controls=[
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
-                                    ft.Text(f"📌 {tipe_key} — Target vs Aktual", size=13, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
+                                    ft.Text(f"📌 {tipe_key}", size=12.5, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
                                     ft.Text(f"Target: {format_rp(ov['target_by_tipe'].get(tipe_key, 0))}", size=11, color=C_SECONDARY),
                                 ],
                             ),
@@ -2358,16 +3001,15 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
-            padding=ft.Padding.only(bottom=30),
+            padding=ft.Padding.only(bottom=24),
             controls=[
                 self.build_period_selector(show_month=True),
-
-                # VISUALISASI ARUS KAS & ALOKASI UANG
                 ft.Container(
-                    bgcolor=C_CARD_DARK,
+                    gradient=dark_card_gradient(),
                     padding=ft.Padding.all(14),
-                    border_radius=ft.BorderRadius.all(14),
+                    border_radius=ft.BorderRadius.all(15),
                     border=ft.Border.all(1, C_SECONDARY),
+                    shadow=card_shadow(),
                     content=ft.Column(
                         spacing=10,
                         controls=[
@@ -2389,33 +3031,23 @@ class MyLifeApp:
                                     ),
                                 ],
                             ),
-
-                            # Proportional Stacked Segment Bar
                             ft.Container(
-                                border_radius=ft.BorderRadius.all(12),
+                                border_radius=ft.BorderRadius.all(10),
                                 clip_behavior=ft.ClipBehavior.HARD_EDGE,
                                 border=ft.Border.all(1, C_MUTED),
-                                content=ft.Row(
-                                    spacing=2,
-                                    controls=segments,
-                                ),
+                                content=ft.Row(spacing=2, controls=segments),
                             ),
-
-                            # Color Legend Chips
                             ft.Row(
                                 wrap=True,
                                 spacing=8,
                                 controls=[
-                                    ft.Row(spacing=4, controls=[ft.Container(width=10, height=10, bgcolor=C_SECONDARY, border_radius=ft.BorderRadius.all(3)), ft.Text(f"Kebutuhan: {format_rp(ov['kebutuhan'])} ({pct_keb_act:.1f}%)", size=10, color=C_TEXT_LIGHT)]),
-                                    ft.Row(spacing=4, controls=[ft.Container(width=10, height=10, bgcolor=C_WARNING, border_radius=ft.BorderRadius.all(3)), ft.Text(f"Keinginan: {format_rp(ov['keinginan'])} ({pct_kei_act:.1f}%)", size=10, color=C_TEXT_LIGHT)]),
-                                    ft.Row(spacing=4, controls=[ft.Container(width=10, height=10, bgcolor=C_PRIMARY, border_radius=ft.BorderRadius.all(3)), ft.Text(f"Tabungan: {format_rp(ov['tabungan'])} ({pct_tab_act:.1f}%)", size=10, color=C_TEXT_LIGHT)]),
-                                    ft.Row(spacing=4, controls=[ft.Container(width=10, height=10, bgcolor=C_SUCCESS if ov['selisih'] >= 0 else C_DANGER, border_radius=ft.BorderRadius.all(3)), ft.Text(f"Sisa Bebas: {format_rp(ov['selisih'])} ({remain_pct:.1f}%)", size=10, color=C_SUCCESS if ov['selisih'] >= 0 else C_DANGER, weight=ft.FontWeight.BOLD)]),
+                                    ft.Row(spacing=4, controls=[ft.Container(width=10, height=10, bgcolor=C_SECONDARY, border_radius=ft.BorderRadius.all(3)), ft.Text(f"Kebutuhan: {pct_keb_act:.1f}%", size=10, color=C_TEXT_LIGHT)]),
+                                    ft.Row(spacing=4, controls=[ft.Container(width=10, height=10, bgcolor=C_WARNING, border_radius=ft.BorderRadius.all(3)), ft.Text(f"Keinginan: {pct_kei_act:.1f}%", size=10, color=C_TEXT_LIGHT)]),
+                                    ft.Row(spacing=4, controls=[ft.Container(width=10, height=10, bgcolor=C_PRIMARY, border_radius=ft.BorderRadius.all(3)), ft.Text(f"Tabungan: {pct_tab_act:.1f}%", size=10, color=C_TEXT_LIGHT)]),
+                                    ft.Row(spacing=4, controls=[ft.Container(width=10, height=10, bgcolor=C_SUCCESS if ov["selisih"] >= 0 else C_DANGER, border_radius=ft.BorderRadius.all(3)), ft.Text(f"Sisa: {remain_pct:.1f}%", size=10, color=C_SUCCESS if ov["selisih"] >= 0 else C_DANGER, weight=ft.FontWeight.BOLD)]),
                                 ],
                             ),
-
                             ft.Divider(color=C_MUTED, height=1),
-
-                            # Circular Health Meter & Status
                             ft.Row(
                                 spacing=12,
                                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -2423,27 +3055,15 @@ class MyLifeApp:
                                     ft.Stack(
                                         alignment=ft.Alignment.CENTER,
                                         controls=[
-                                            ft.ProgressRing(
-                                                value=1.0,
-                                                color=C_MUTED,
-                                                stroke_width=9,
-                                                width=84,
-                                                height=84,
-                                            ),
-                                            ft.ProgressRing(
-                                                value=min(1.0, used_pct / 100.0),
-                                                color=health_color,
-                                                stroke_width=9,
-                                                width=84,
-                                                height=84,
-                                            ),
+                                            ft.ProgressRing(value=1.0, color=C_MUTED, stroke_width=8, width=78, height=78),
+                                            ft.ProgressRing(value=min(1.0, used_pct / 100.0), color=health_color, stroke_width=8, width=78, height=78),
                                             ft.Column(
                                                 alignment=ft.MainAxisAlignment.CENTER,
                                                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                                                 spacing=0,
                                                 controls=[
-                                                    ft.Text(f"{used_pct:.0f}%", size=15, weight=ft.FontWeight.BOLD, color=C_WHITE),
-                                                    ft.Text("Terpakai", size=9, color=C_TEXT_LIGHT),
+                                                    ft.Text(f"{used_pct:.0f}%", size=14, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                                    ft.Text("Terpakai", size=8.5, color=C_TEXT_LIGHT),
                                                 ],
                                             ),
                                         ],
@@ -2457,7 +3077,7 @@ class MyLifeApp:
                                                 padding=ft.Padding.symmetric(horizontal=8, vertical=3),
                                                 border_radius=ft.BorderRadius.all(6),
                                                 border=ft.Border.all(1, health_color),
-                                                content=ft.Text(health_title, size=11, weight=ft.FontWeight.BOLD, color=health_color),
+                                                content=ft.Text(health_title, size=10.5, weight=ft.FontWeight.BOLD, color=health_color),
                                             ),
                                             ft.Text(health_desc, size=11, color=C_TEXT_LIGHT),
                                             ft.Text(f"Sisa Saldo: {format_rp(ov['selisih'])}", size=12, weight=ft.FontWeight.BOLD, color=health_color),
@@ -2468,8 +3088,6 @@ class MyLifeApp:
                         ],
                     ),
                 ),
-
-                # Cash Flow Summary Card
                 ft.Container(
                     bgcolor=C_CARD_DARK,
                     padding=ft.Padding.all(14),
@@ -2478,7 +3096,7 @@ class MyLifeApp:
                     content=ft.Column(
                         spacing=8,
                         controls=[
-                            ft.Text("💰 CASH FLOW SUMMARY & SISA PENGELUARAN", size=13, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
+                            ft.Text("💰 CASH FLOW SUMMARY BULAN INI", size=13, weight=ft.FontWeight.BOLD, color=C_SECONDARY),
                             ft.Row(
                                 spacing=8,
                                 controls=[
@@ -2491,29 +3109,32 @@ class MyLifeApp:
                                 controls=[
                                     self._finance_box("Total Kebutuhan", format_rp(ov["kebutuhan"]), C_TEXT_LIGHT),
                                     self._finance_box("Total Keinginan", format_rp(ov["keinginan"]), C_WARNING),
-                                    self._finance_box("Tabungan & Invest", format_rp(ov["tabungan"]), C_SECONDARY),
                                 ],
                             ),
-                            ft.Text(f"Sisa Untuk Pengeluaran: {remain_pct:.1f}% ({format_rp(ov['selisih'])}) | Terpakai: {used_pct:.1f}%", size=11, color=C_TEXT_LIGHT),
-                            ft.ProgressBar(value=min(1.0, used_pct / 100.0), bar_height=8, color=C_PRIMARY, bgcolor=C_MUTED, border_radius=ft.BorderRadius.all(4)),
+                            ft.Row(
+                                spacing=8,
+                                controls=[
+                                    self._finance_box("Tabungan & Investasi", format_rp(ov["tabungan"]), C_SECONDARY),
+                                    self._finance_box("Total Pengeluaran", format_rp(ov["total_alokasi"]), C_WHITE),
+                                ],
+                            ),
                         ],
                     ),
                 ),
-
-                # Top 5 Expense Categories (if any expenses exist)
                 *(
                     [
                         ft.Container(
                             bgcolor=C_CARD_DARK,
                             padding=ft.Padding.all(14),
                             border_radius=ft.BorderRadius.all(14),
+                            border=ft.Border.all(1, C_MUTED),
                             content=ft.Column(
                                 spacing=6,
                                 controls=[
                                     ft.Row(
                                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                         controls=[
-                                            ft.Text("🏆 TOP PENGELUARAN TERBESAR BULAN INI", size=13, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
+                                            ft.Text("🏆 TOP 5 PENGELUARAN TERBESAR", size=12.5, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
                                             ft.Text(f"Total: {format_rp(tot_exp_only)}", size=11, color=C_SECONDARY),
                                         ],
                                     ),
@@ -2525,12 +3146,11 @@ class MyLifeApp:
                     if top_exp_rows
                     else []
                 ),
-
-                # Breakdown Persentase 50/30/20
                 ft.Container(
                     bgcolor=C_CARD_DARK,
                     padding=ft.Padding.all(14),
                     border_radius=ft.BorderRadius.all(14),
+                    border=ft.Border.all(1, C_MUTED),
                     content=ft.Column(
                         spacing=8,
                         controls=[
@@ -2541,7 +3161,6 @@ class MyLifeApp:
                         ],
                     ),
                 ),
-
                 *cat_sections,
             ],
         )
@@ -2551,31 +3170,90 @@ class MyLifeApp:
         tot = y_ov["totals"]
         tab_progress_pct = (tot["TABUNGAN & INVESTASI"] / max(1.0, y_ov["annual_tab_target"])) * 100.0
 
+        max_m_val = max(
+            [max(m["pendapatan"], m["kebutuhan"] + m["keinginan"] + m["tabungan"]) for m in y_ov["months"]] + [1000000.0]
+        )
+
+        # Visual 12-Month Dual Bar Chart (Income vs Allocation)
+        chart_cols = []
+        for m in y_ov["months"]:
+            m_idx = m["month"]
+            in_v = m["pendapatan"]
+            out_v = m["kebutuhan"] + m["keinginan"] + m["tabungan"]
+            h_in = max(4, int(round((in_v / max_m_val) * 70))) if in_v > 0 else 3
+            h_out = max(4, int(round((out_v / max_m_val) * 70))) if out_v > 0 else 3
+            is_cur = m_idx == self.selected_month
+            chart_cols.append(
+                ft.Column(
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    alignment=ft.MainAxisAlignment.END,
+                    spacing=3,
+                    expand=True,
+                    controls=[
+                        ft.Row(
+                            spacing=2,
+                            alignment=ft.MainAxisAlignment.CENTER,
+                            vertical_alignment=ft.CrossAxisAlignment.END,
+                            controls=[
+                                ft.Container(
+                                    width=6,
+                                    height=h_in,
+                                    bgcolor=C_SUCCESS if in_v > 0 else C_MUTED,
+                                    border_radius=ft.BorderRadius.all(2),
+                                    tooltip=f"{MONTH_NAMES_ID[m_idx]} Pendapatan: {format_rp(in_v)}",
+                                ),
+                                ft.Container(
+                                    width=6,
+                                    height=h_out,
+                                    bgcolor=C_PRIMARY if out_v > 0 else C_MUTED,
+                                    border_radius=ft.BorderRadius.all(2),
+                                    tooltip=f"{MONTH_NAMES_ID[m_idx]} Alokasi: {format_rp(out_v)}",
+                                ),
+                            ],
+                        ),
+                        ft.Text(
+                            MONTH_SHORT_ID[m_idx],
+                            size=8.5,
+                            weight=ft.FontWeight.BOLD if is_cur else ft.FontWeight.NORMAL,
+                            color=C_WHITE if is_cur else C_SECONDARY,
+                        ),
+                    ],
+                )
+            )
+
         month_cards = []
         for m in y_ov["months"]:
+            m_idx = m["month"]
             month_cards.append(
                 ft.Container(
                     bgcolor=C_BG_DEEP,
                     padding=ft.Padding.all(10),
                     border_radius=ft.BorderRadius.all(8),
-                    border=ft.Border.all(1, C_MUTED),
+                    border=ft.Border.all(1, C_PRIMARY if m_idx == self.selected_month else C_MUTED),
+                    on_click=lambda e, mi=m_idx: (setattr(self, "selected_month", mi), setattr(self, "finance_subtab", 1), self.render()),
                     content=ft.Column(
                         spacing=4,
                         controls=[
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
-                                    ft.Text(f"{MONTH_NAMES_ID[m['month']]} {self.selected_year}", size=12, weight=ft.FontWeight.BOLD, color=C_WHITE),
-                                    ft.Text(f"Selisih: {format_rp(m['selisih'])}", size=11, weight=ft.FontWeight.BOLD, color=C_SUCCESS if m["selisih"] >= 0 else C_DANGER),
+                                    ft.Text(f"{MONTH_NAMES_ID[m_idx]} {self.selected_year}", size=12, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                    ft.Text(
+                                        f"Selisih: {format_rp(m['selisih'])}",
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=C_SUCCESS if m["selisih"] >= 0 else C_DANGER,
+                                    ),
                                 ],
                             ),
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                wrap=True,
                                 controls=[
-                                    ft.Text(f"In: {format_rp(m['pendapatan'])}", size=10, color=C_SUCCESS),
-                                    ft.Text(f"Keb: {format_rp(m['kebutuhan'])}", size=10, color=C_TEXT_LIGHT),
-                                    ft.Text(f"Kei: {format_rp(m['keinginan'])}", size=10, color=C_WARNING),
-                                    ft.Text(f"Tab: {format_rp(m['tabungan'])}", size=10, color=C_SECONDARY),
+                                    ft.Text(f"In: {format_rp_compact(m['pendapatan'])}", size=10.5, color=C_SUCCESS),
+                                    ft.Text(f"Keb: {format_rp_compact(m['kebutuhan'])}", size=10.5, color=C_TEXT_LIGHT),
+                                    ft.Text(f"Kei: {format_rp_compact(m['keinginan'])}", size=10.5, color=C_WARNING),
+                                    ft.Text(f"Tab: {format_rp_compact(m['tabungan'])}", size=10.5, color=C_SECONDARY),
                                 ],
                             ),
                         ],
@@ -2586,23 +3264,24 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
-            padding=ft.Padding.only(bottom=30),
+            padding=ft.Padding.only(bottom=24),
             controls=[
                 self.build_period_selector(show_month=False),
                 ft.Container(
-                    bgcolor=C_CARD_DARK,
+                    gradient=dark_card_gradient(),
                     padding=ft.Padding.all(14),
-                    border_radius=ft.BorderRadius.all(14),
+                    border_radius=ft.BorderRadius.all(15),
                     border=ft.Border.all(1, C_PRIMARY),
+                    shadow=card_shadow(),
                     content=ft.Column(
-                        spacing=8,
+                        spacing=10,
                         controls=[
-                            ft.Text(f"📈 OVERVIEW TAHUNAN ({self.selected_year})", size=14, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                            ft.Text(f"📈 OVERVIEW KEUANGAN TAHUNAN ({self.selected_year})", size=14, weight=ft.FontWeight.BOLD, color=C_WHITE),
                             ft.Row(
                                 spacing=8,
                                 controls=[
                                     self._finance_box("Pendapatan Setahun", format_rp(tot["PENDAPATAN"]), C_SUCCESS),
-                                    self._finance_box("Selisih Setahun", format_rp(y_ov["selisih_tahun"]), C_SECONDARY),
+                                    self._finance_box("Selisih Setahun", format_rp(y_ov["selisih_tahun"]), C_SECONDARY if y_ov["selisih_tahun"] >= 0 else C_DANGER),
                                 ],
                             ),
                             ft.Row(
@@ -2610,15 +3289,33 @@ class MyLifeApp:
                                 controls=[
                                     self._finance_box("Total Kebutuhan", format_rp(tot["KEBUTUHAN"]), C_TEXT_LIGHT),
                                     self._finance_box("Total Keinginan", format_rp(tot["KEINGINAN"]), C_WARNING),
-                                    self._finance_box("Total Tabungan", format_rp(tot["TABUNGAN & INVESTASI"]), C_SUCCESS),
+                                ],
+                            ),
+                            ft.Row(
+                                spacing=8,
+                                controls=[
+                                    self._finance_box("Total Tabungan & Invest", format_rp(tot["TABUNGAN & INVESTASI"]), C_SUCCESS),
+                                    self._finance_box("Target Tabungan Thn", format_rp(y_ov["annual_tab_target"]), C_SECONDARY),
                                 ],
                             ),
                             ft.Text(
-                                f"Progres Tabungan & Investasi Tahunan: {tab_progress_pct:.1f}% dari Target {format_rp(y_ov['annual_tab_target'])}",
+                                f"Progres Tabungan & Investasi Tahunan: {tab_progress_pct:.1f}%",
                                 size=11,
                                 color=C_TEXT_LIGHT,
                             ),
-                            ft.ProgressBar(value=min(1.0, tab_progress_pct / 100.0), bar_height=8, color=C_SECONDARY, bgcolor=C_MUTED),
+                            ft.ProgressBar(value=min(1.0, tab_progress_pct / 100.0), bar_height=8, color=C_SECONDARY, bgcolor=C_MUTED, border_radius=ft.BorderRadius.all(4)),
+                            ft.Container(
+                                bgcolor=C_BG_DEEP,
+                                padding=ft.Padding.only(left=8, right=8, top=12, bottom=8),
+                                border_radius=ft.BorderRadius.all(12),
+                                border=ft.Border.all(1, C_MUTED),
+                                height=115,
+                                content=ft.Row(
+                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                    vertical_alignment=ft.CrossAxisAlignment.END,
+                                    controls=chart_cols,
+                                ),
+                            ),
                         ],
                     ),
                 ),
@@ -2626,10 +3323,11 @@ class MyLifeApp:
                     bgcolor=C_CARD_DARK,
                     padding=ft.Padding.all(14),
                     border_radius=ft.BorderRadius.all(14),
+                    border=ft.Border.all(1, C_MUTED),
                     content=ft.Column(
                         spacing=6,
                         controls=[
-                            ft.Text("🗓️ SUMMARY TRANSAKSI & CASH FLOW 12 BULAN", size=13, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
+                            ft.Text("🗓️ ARUS KAS 12 BULAN (Ketuk Bulan untuk Detail)", size=13, weight=ft.FontWeight.BOLD, color=C_TEXT_LIGHT),
                             ft.Column(spacing=6, controls=month_cards),
                         ],
                     ),
@@ -2646,7 +3344,7 @@ class MyLifeApp:
             self.render()
 
         sub_bar = self.build_subtab_bar(
-            ["Set-Up Budget", "Tracker Langganan", "Saving Goals 🌟"],
+            ["Set-Up Budget", "Langganan", "Saving Goals 🌟"],
             self.setup_subtab,
             switch_sub,
         )
@@ -2715,7 +3413,6 @@ class MyLifeApp:
                 )
             )
 
-        grouped_ui = []
         def open_edit_cat_dialog(c: dict):
             dd_t = ft.Dropdown(
                 label="Tipe Kategori",
@@ -2729,12 +3426,7 @@ class MyLifeApp:
                     ft.dropdown.Option(key="TABUNGAN & INVESTASI", text="TABUNGAN & INVESTASI"),
                 ],
             )
-            tf_k = ft.TextField(
-                label="Nama Kategori (misal: Gaji Pokok)",
-                value=c["kategori"],
-                color=C_WHITE,
-                bgcolor=C_MUTED,
-            )
+            tf_k = ft.TextField(label="Nama Kategori", value=c["kategori"], color=C_WHITE, bgcolor=C_MUTED)
             tf_jt = ft.TextField(
                 label="Tanggal Jatuh Tempo (1-31, opsional)",
                 value=str(c["jatuh_tempo"]) if c.get("jatuh_tempo") else "",
@@ -2776,6 +3468,7 @@ class MyLifeApp:
                 )
             )
 
+        grouped_ui = []
         for t_name in ["PENDAPATAN", "KEBUTUHAN", "KEINGINAN", "TABUNGAN & INVESTASI"]:
             t_cats = [c for c in cats if c["tipe"] == t_name]
             tot_t = sum(c["target"] or 0 for c in t_cats)
@@ -2787,11 +3480,15 @@ class MyLifeApp:
                         bgcolor=C_BG_DEEP,
                         padding=ft.Padding.symmetric(horizontal=10, vertical=6),
                         border_radius=ft.BorderRadius.all(8),
-                        on_click=lambda e, cat_item=c: open_edit_cat_dialog(cat_item),
                         content=ft.Row(
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
                             controls=[
-                                ft.Text(f"{c['kategori']}{jt_str}", size=12, color=C_WHITE),
+                                ft.Container(
+                                    expand=True,
+                                    on_click=lambda e, cat_item=c: open_edit_cat_dialog(cat_item),
+                                    content=ft.Text(f"{c['kategori']}{jt_str}", size=12, color=C_WHITE),
+                                ),
                                 ft.Row(
                                     spacing=2,
                                     controls=[
@@ -2799,14 +3496,20 @@ class MyLifeApp:
                                         ft.IconButton(
                                             icon=ft.Icons.EDIT_OUTLINED,
                                             icon_color=C_SECONDARY,
-                                            icon_size=18,
+                                            icon_size=16,
+                                            width=30,
+                                            height=30,
+                                            style=ft.ButtonStyle(padding=ft.Padding.all(2)),
                                             tooltip="Edit Budget / Kategori",
                                             on_click=lambda e, cat_item=c: open_edit_cat_dialog(cat_item),
                                         ),
                                         ft.IconButton(
                                             icon=ft.Icons.DELETE_OUTLINE,
                                             icon_color=C_DANGER,
-                                            icon_size=18,
+                                            icon_size=16,
+                                            width=30,
+                                            height=30,
+                                            style=ft.ButtonStyle(padding=ft.Padding.all(2)),
                                             tooltip="Hapus Kategori",
                                             on_click=lambda e, cid=c["id"]: (self.db.delete_finance_category(cid), self.render()),
                                         ),
@@ -2822,6 +3525,7 @@ class MyLifeApp:
                     bgcolor=C_CARD_DARK,
                     padding=ft.Padding.all(12),
                     border_radius=ft.BorderRadius.all(12),
+                    border=ft.Border.all(1, C_MUTED),
                     content=ft.Column(
                         spacing=6,
                         controls=[
@@ -2841,10 +3545,10 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
-            padding=ft.Padding.only(bottom=30),
+            padding=ft.Padding.only(bottom=24),
             controls=[
                 ft.Container(
-                    bgcolor=C_CARD_DARK,
+                    gradient=dark_card_gradient(),
                     padding=ft.Padding.all(14),
                     border_radius=ft.BorderRadius.all(14),
                     border=ft.Border.all(1, C_PRIMARY),
@@ -2887,12 +3591,23 @@ class MyLifeApp:
     def build_subscriptions_subview(self) -> ft.Control:
         sub_data = self.db.get_subscriptions()
 
-        def open_add_sub_dialog(e):
-            tf_nama = ft.TextField(label="Nama Langganan (misal: Netflix, Spotify)", color=C_WHITE, bgcolor=C_MUTED)
-            tf_kat = ft.TextField(label="Kategori (Entertainment / Productivity / Belanja)", value="Entertainment", color=C_WHITE, bgcolor=C_MUTED)
+        def open_sub_dialog(existing_sub: dict = None):
+            is_edit = existing_sub is not None
+            tf_nama = ft.TextField(
+                label="Nama Langganan (misal: Netflix, Spotify)",
+                value=existing_sub["nama"] if is_edit else "",
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
+            tf_kat = ft.TextField(
+                label="Kategori (Entertainment / Productivity / Belanja)",
+                value=existing_sub["kategori"] if is_edit else "Entertainment",
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
             dd_bill = ft.Dropdown(
                 label="Siklus Tagihan (Billing)",
-                value="Monthly",
+                value=existing_sub["billing"] if is_edit else "Monthly",
                 color=C_WHITE,
                 bgcolor=C_MUTED,
                 options=[
@@ -2900,9 +3615,25 @@ class MyLifeApp:
                     ft.dropdown.Option(key="Annually", text="Annually (Tahunan)"),
                 ],
             )
-            tf_tgl = ft.TextField(label="Tanggal Renew (1-31)", value="5", keyboard_type=ft.KeyboardType.NUMBER, color=C_WHITE, bgcolor=C_MUTED)
-            tf_harga = ft.TextField(label="Harga Tagihan (Rp)", keyboard_type=ft.KeyboardType.NUMBER, color=C_WHITE, bgcolor=C_MUTED)
-            sw_auto = ft.Switch(label="Auto Renew Aktif", value=True, active_color=C_PRIMARY)
+            tf_tgl = ft.TextField(
+                label="Tanggal Renew (1-31)",
+                value=str(existing_sub["tanggal_renew"] or "5") if is_edit else "5",
+                keyboard_type=ft.KeyboardType.NUMBER,
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
+            tf_harga = ft.TextField(
+                label="Harga Tagihan (Rp)",
+                value=str(int(round(float(existing_sub["harga"])))) if is_edit else "",
+                keyboard_type=ft.KeyboardType.NUMBER,
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
+            sw_auto = ft.Switch(
+                label="Auto Renew Aktif",
+                value=bool(existing_sub["auto_renew"]) if is_edit else True,
+                active_color=C_PRIMARY,
+            )
 
             def save_sub(ev):
                 try:
@@ -2913,15 +3644,19 @@ class MyLifeApp:
                     self.notify("Nama & harga langganan harus valid!", C_DANGER)
                     return
                 tgl_r = int(tf_tgl.value) if (tf_tgl.value and tf_tgl.value.strip().isdigit()) else None
-                self.db.add_subscription(tf_nama.value, tf_kat.value, dd_bill.value, sw_auto.value, tgl_r, h_val)
+                if is_edit:
+                    self.db.update_subscription(existing_sub["id"], tf_nama.value, tf_kat.value, dd_bill.value, sw_auto.value, tgl_r, h_val)
+                    self.notify("Langganan berhasil diperbarui!", C_SUCCESS)
+                else:
+                    self.db.add_subscription(tf_nama.value, tf_kat.value, dd_bill.value, sw_auto.value, tgl_r, h_val)
+                    self.notify("Langganan berhasil ditambahkan!", C_PRIMARY)
                 self.page.pop_dialog()
-                self.notify("Langganan berhasil ditambahkan!", C_PRIMARY)
                 self.render()
 
             self.page.show_dialog(
                 ft.AlertDialog(
                     bgcolor=C_CARD_DARK,
-                    title=ft.Text("Tambah Tracker Langganan", color=C_WHITE),
+                    title=ft.Text("Edit Langganan" if is_edit else "Tambah Tracker Langganan", color=C_WHITE, weight=ft.FontWeight.BOLD),
                     content=ft.Column(tight=True, spacing=8, controls=[tf_nama, tf_kat, dd_bill, tf_tgl, tf_harga, sw_auto]),
                     actions=[
                         ft.TextButton(content="Batal", on_click=lambda ev: self.page.pop_dialog()),
@@ -2968,11 +3703,30 @@ class MyLifeApp:
                                             ),
                                         ],
                                     ),
-                                    ft.IconButton(
-                                        icon=ft.Icons.DELETE_OUTLINE,
-                                        icon_color=C_DANGER,
-                                        icon_size=18,
-                                        on_click=lambda e, sid=s["id"]: (self.db.delete_subscription(sid), self.render()),
+                                    ft.Row(
+                                        spacing=2,
+                                        controls=[
+                                            ft.IconButton(
+                                                icon=ft.Icons.EDIT_OUTLINED,
+                                                icon_color=C_SECONDARY,
+                                                icon_size=16,
+                                                width=30,
+                                                height=30,
+                                                style=ft.ButtonStyle(padding=ft.Padding.all(2)),
+                                                tooltip="Edit Langganan",
+                                                on_click=lambda e, item=s: open_sub_dialog(item),
+                                            ),
+                                            ft.IconButton(
+                                                icon=ft.Icons.DELETE_OUTLINE,
+                                                icon_color=C_DANGER,
+                                                icon_size=16,
+                                                width=30,
+                                                height=30,
+                                                style=ft.ButtonStyle(padding=ft.Padding.all(2)),
+                                                tooltip="Hapus Langganan",
+                                                on_click=lambda e, sid=s["id"]: (self.db.delete_subscription(sid), self.render()),
+                                            ),
+                                        ],
                                     ),
                                 ],
                             ),
@@ -2993,8 +3747,8 @@ class MyLifeApp:
                                         color=C_TEXT_LIGHT,
                                     ),
                                     ft.Container(
-                                        bgcolor=C_MUTED,
-                                        padding=ft.Padding.symmetric(horizontal=8, vertical=4),
+                                        bgcolor=C_PRIMARY,
+                                        padding=ft.Padding.symmetric(horizontal=9, vertical=4),
                                         border_radius=ft.BorderRadius.all(6),
                                         on_click=lambda e, item=s: record_sub_to_tx(item),
                                         content=ft.Text("+ Catat Transaksi", size=10, color=C_WHITE, weight=ft.FontWeight.BOLD),
@@ -3020,10 +3774,10 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
-            padding=ft.Padding.only(bottom=30),
+            padding=ft.Padding.only(bottom=24),
             controls=[
                 ft.Container(
-                    bgcolor=C_CARD_DARK,
+                    gradient=dark_card_gradient(),
                     padding=ft.Padding.all(14),
                     border_radius=ft.BorderRadius.all(14),
                     border=ft.Border.all(1, C_PRIMARY),
@@ -3034,7 +3788,7 @@ class MyLifeApp:
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
                                     ft.Text("🔄 TRACKER LANGGANAN", size=14, weight=ft.FontWeight.BOLD, color=C_WHITE),
-                                    ft.Button(content="+ Langganan", bgcolor=C_PRIMARY, color=C_WHITE, on_click=open_add_sub_dialog),
+                                    ft.Button(content="+ Langganan", bgcolor=C_PRIMARY, color=C_WHITE, on_click=lambda e: open_sub_dialog(None)),
                                 ],
                             ),
                             ft.Row(
@@ -3057,11 +3811,34 @@ class MyLifeApp:
     def build_saving_goals_subview(self) -> ft.Control:
         goals = self.db.get_saving_goals()
 
-        def open_add_goal_dialog(e):
-            tf_name = ft.TextField(label="Nama Impian / Goal (misal: Dana Darurat, Liburan)", color=C_WHITE, bgcolor=C_MUTED)
-            tf_target = ft.TextField(label="Target Nominal (Rp)", keyboard_type=ft.KeyboardType.NUMBER, color=C_WHITE, bgcolor=C_MUTED)
-            tf_curr = ft.TextField(label="Nominal Terkumpul Saat Ini (Rp)", value="0", keyboard_type=ft.KeyboardType.NUMBER, color=C_WHITE, bgcolor=C_MUTED)
-            tf_dead = ft.TextField(label="Target Tanggal Tercapai (YYYY-MM-DD)", value="2027-12-31", color=C_WHITE, bgcolor=C_MUTED)
+        def open_goal_dialog(existing_goal: dict = None):
+            is_edit = existing_goal is not None
+            tf_name = ft.TextField(
+                label="Nama Impian / Goal (misal: Dana Darurat, Liburan)",
+                value=existing_goal["nama_goal"] if is_edit else "",
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
+            tf_target = ft.TextField(
+                label="Target Nominal (Rp)",
+                value=str(int(round(float(existing_goal["target_nominal"])))) if is_edit else "",
+                keyboard_type=ft.KeyboardType.NUMBER,
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
+            tf_curr = ft.TextField(
+                label="Nominal Terkumpul Saat Ini (Rp)",
+                value=str(int(round(float(existing_goal["terkumpul_nominal"] or 0)))) if is_edit else "0",
+                keyboard_type=ft.KeyboardType.NUMBER,
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
+            tf_dead = ft.TextField(
+                label="Target Tanggal Tercapai (YYYY-MM-DD)",
+                value=(existing_goal["deadline"] or "2027-12-31") if is_edit else "2027-12-31",
+                color=C_WHITE,
+                bgcolor=C_MUTED,
+            )
 
             def save_g(ev):
                 try:
@@ -3072,15 +3849,21 @@ class MyLifeApp:
                 except ValueError:
                     self.notify("Masukkan nama dan nominal target yang valid!", C_DANGER)
                     return
-                self.db.save_saving_goal(tf_name.value, t_nom, c_nom, tf_dead.value)
+                self.db.save_saving_goal(
+                    tf_name.value,
+                    t_nom,
+                    c_nom,
+                    tf_dead.value,
+                    goal_id=existing_goal["id"] if is_edit else None,
+                )
                 self.page.pop_dialog()
-                self.notify("Target tabungan berhasil ditambahkan!", C_PRIMARY)
+                self.notify("Saving Goal berhasil disimpan!", C_PRIMARY)
                 self.render()
 
             self.page.show_dialog(
                 ft.AlertDialog(
                     bgcolor=C_CARD_DARK,
-                    title=ft.Text("Tambah Saving Goal Baru", color=C_WHITE),
+                    title=ft.Text("Edit Saving Goal" if is_edit else "Tambah Saving Goal Baru", color=C_WHITE, weight=ft.FontWeight.BOLD),
                     content=ft.Column(tight=True, spacing=8, controls=[tf_name, tf_target, tf_curr, tf_dead]),
                     actions=[
                         ft.TextButton(content="Batal", on_click=lambda ev: self.page.pop_dialog()),
@@ -3126,29 +3909,49 @@ class MyLifeApp:
         goal_cards = []
         for g in goals:
             pct = (g["terkumpul_nominal"] / max(1.0, g["target_nominal"])) * 100.0
+            sisa_goal = max(0.0, float(g["target_nominal"]) - float(g["terkumpul_nominal"] or 0))
             goal_cards.append(
                 ft.Container(
                     bgcolor=C_CARD_DARK,
                     padding=ft.Padding.all(14),
                     border_radius=ft.BorderRadius.all(14),
-                    border=ft.Border.all(1, C_SECONDARY if pct >= 100 else C_MUTED),
+                    border=ft.Border.all(1, C_SUCCESS if pct >= 100 else C_MUTED),
                     content=ft.Column(
                         spacing=8,
                         controls=[
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
-                                    ft.Text(g["nama_goal"], size=15, weight=ft.FontWeight.BOLD, color=C_WHITE),
-                                    ft.Text(f"{pct:.1f}%", size=14, weight=ft.FontWeight.BOLD, color=C_SUCCESS if pct >= 100 else C_SECONDARY),
+                                    ft.Column(
+                                        spacing=1,
+                                        expand=True,
+                                        controls=[
+                                            ft.Text(g["nama_goal"], size=15, weight=ft.FontWeight.BOLD, color=C_WHITE),
+                                            ft.Text(
+                                                f"Target Tanggal: {g['deadline'] or '-'}"
+                                                + (f" • Kurang {format_rp(sisa_goal)}" if sisa_goal > 0 else " • Tercapai! 🎉"),
+                                                size=10.5,
+                                                color=C_SECONDARY,
+                                            ),
+                                        ],
+                                    ),
+                                    ft.Text(f"{pct:.1f}%", size=15, weight=ft.FontWeight.BOLD, color=C_SUCCESS if pct >= 100 else C_SECONDARY),
                                 ],
                             ),
-                            ft.ProgressBar(value=min(1.0, pct / 100.0), bar_height=9, color=C_SUCCESS if pct >= 100 else C_PRIMARY, bgcolor=C_MUTED),
+                            ft.ProgressBar(
+                                value=min(1.0, pct / 100.0),
+                                bar_height=9,
+                                color=C_SUCCESS if pct >= 100 else C_PRIMARY,
+                                bgcolor=C_MUTED,
+                                border_radius=ft.BorderRadius.all(4),
+                            ),
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                 controls=[
-                                    ft.Text(f"{format_rp(g['terkumpul_nominal'])} / {format_rp(g['target_nominal'])}", size=12, color=C_TEXT_LIGHT),
+                                    ft.Text(f"{format_rp(g['terkumpul_nominal'])} / {format_rp(g['target_nominal'])}", size=12, weight=ft.FontWeight.W_500, color=C_TEXT_LIGHT),
                                     ft.Row(
-                                        spacing=6,
+                                        spacing=4,
                                         controls=[
                                             ft.Button(
                                                 content="+ Nabung",
@@ -3157,9 +3960,23 @@ class MyLifeApp:
                                                 on_click=lambda e, item=g: add_funds_to_goal(item),
                                             ),
                                             ft.IconButton(
+                                                icon=ft.Icons.EDIT_OUTLINED,
+                                                icon_color=C_SECONDARY,
+                                                icon_size=16,
+                                                width=30,
+                                                height=30,
+                                                style=ft.ButtonStyle(padding=ft.Padding.all(2)),
+                                                tooltip="Edit Target",
+                                                on_click=lambda e, item=g: open_goal_dialog(item),
+                                            ),
+                                            ft.IconButton(
                                                 icon=ft.Icons.DELETE_OUTLINE,
                                                 icon_color=C_DANGER,
-                                                icon_size=18,
+                                                icon_size=16,
+                                                width=30,
+                                                height=30,
+                                                style=ft.ButtonStyle(padding=ft.Padding.all(2)),
+                                                tooltip="Hapus Goal",
                                                 on_click=lambda e, gid=g["id"]: (self.db.delete_saving_goal(gid), self.render()),
                                             ),
                                         ],
@@ -3174,10 +3991,10 @@ class MyLifeApp:
         return ft.ListView(
             expand=True,
             spacing=10,
-            padding=ft.Padding.only(bottom=30),
+            padding=ft.Padding.only(bottom=24),
             controls=[
                 ft.Container(
-                    bgcolor=C_CARD_DARK,
+                    gradient=dark_card_gradient(),
                     padding=ft.Padding.all(14),
                     border_radius=ft.BorderRadius.all(14),
                     border=ft.Border.all(1, C_PRIMARY),
@@ -3189,10 +4006,10 @@ class MyLifeApp:
                                 expand=True,
                                 controls=[
                                     ft.Text("🌟 TARGET TABUNGAN IMPIAN", size=14, weight=ft.FontWeight.BOLD, color=C_WHITE),
-                                    ft.Text("Fitur ekstra untuk memantau progres dana impian Anda", size=11, color=C_SECONDARY),
+                                    ft.Text("Pantau dan capai target dana impian Anda", size=11, color=C_SECONDARY),
                                 ],
                             ),
-                            ft.Button(content="+ Target Baru", bgcolor=C_PRIMARY, color=C_WHITE, on_click=open_add_goal_dialog),
+                            ft.Button(content="+ Target Baru", bgcolor=C_PRIMARY, color=C_WHITE, on_click=lambda e: open_goal_dialog(None)),
                         ],
                     ),
                 ),
@@ -3207,4 +4024,3 @@ def main(page: ft.Page):
 
 if __name__ == "__main__":
     ft.run(main)
-

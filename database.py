@@ -132,6 +132,45 @@ class DatabaseManager:
             )
         """)
 
+        # 9. Books (Reading tracker)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS books (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                judul TEXT NOT NULL,
+                penulis TEXT,
+                total_halaman INTEGER NOT NULL DEFAULT 0,
+                halaman_sekarang INTEGER NOT NULL DEFAULT 0,
+                tanggal_mulai TEXT,
+                tanggal_selesai TEXT
+            )
+        """)
+
+        # 10. Reading Log (per sesi baca)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS reading_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id INTEGER NOT NULL,
+                log_date TEXT NOT NULL,
+                from_page INTEGER NOT NULL,
+                to_page INTEGER NOT NULL,
+                pages_read INTEGER NOT NULL,
+                notes TEXT,
+                FOREIGN KEY(book_id) REFERENCES books(id)
+            )
+        """)
+
+        # 11. Calendar Activities (belajar, olahraga, dll - manual)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS calendar_activities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tanggal TEXT NOT NULL,
+                kategori TEXT NOT NULL,
+                judul TEXT NOT NULL,
+                durasi_menit INTEGER DEFAULT 0,
+                notes TEXT
+            )
+        """)
+
         conn.commit()
         self._seed_defaults(conn)
         conn.close()
@@ -151,78 +190,94 @@ class DatabaseManager:
         for k, v in defaults.items():
             cur.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)", (k, v))
 
-        # Seed Finance Categories from template_keuangan.xlsx if empty
-        cur.execute("SELECT COUNT(*) FROM finance_categories")
-        if cur.fetchone()[0] == 0:
-            initial_categories = [
-                # PENDAPATAN
-                ("PENDAPATAN", "Pendapatan 1 (Gaji Utama)", None, 8000000.0),
-                ("PENDAPATAN", "Pendapatan 2 (Sampingan)", None, 500000.0),
-                ("PENDAPATAN", "Bonus & Lainnya", None, 0.0),
-                # KEBUTUHAN
-                ("KEBUTUHAN", "Biaya sewa", 1, 1750000.0),
-                ("KEBUTUHAN", "Listrik, Internet", 5, 500000.0),
-                ("KEBUTUHAN", "Makan", None, 1500000.0),
-                ("KEBUTUHAN", "Transport", None, 300000.0),
-                ("KEBUTUHAN", "Kartu Kredit", 20, 200000.0),
-                # KEINGINAN
-                ("KEINGINAN", "Belanja", None, 750000.0),
-                ("KEINGINAN", "Langganan", None, 150000.0),
-                ("KEINGINAN", "Staycation", None, 650000.0),
-                ("KEINGINAN", "Hobby", None, 200000.0),
-                ("KEINGINAN", "Personal Care", None, 300000.0),
-                ("KEINGINAN", "Makan di Luar", None, 500000.0),
-                # TABUNGAN & INVESTASI
-                ("TABUNGAN & INVESTASI", "Emergency Fund", 5, 1200000.0),
-                ("TABUNGAN & INVESTASI", "Investments", None, 500000.0),
-            ]
-            cur.executemany(
-                "INSERT INTO finance_categories (tipe, kategori, jatuh_tempo, target) VALUES (?, ?, ?, ?)",
-                initial_categories,
-            )
+        # Check if initial data has already been seeded before
+        cur.execute("SELECT value FROM app_settings WHERE key = 'has_seeded_initial_data'")
+        seeded_flag = cur.fetchone()
 
-        # Seed sample transactions from template_keuangan.xlsx (adjusted to current year/month so charts look alive immediately)
-        cur.execute("SELECT COUNT(*) FROM finance_transactions")
-        if cur.fetchone()[0] == 0:
-            today = datetime.date.today()
-            ym = today.strftime("%Y-%m")
-            sample_tx = [
-                (f"{ym}-01", "PENDAPATAN", "Pendapatan 1 (Gaji Utama)", "Main income", 8000000.0, "Gaji bulanan"),
-                (f"{ym}-02", "KEBUTUHAN", "Biaya sewa", "Apartment Rent", 1750000.0, "Sewa tempat tinggal"),
-                (f"{ym}-05", "KEINGINAN", "Langganan", "Netflix", 54000.0, "Langganan bulanan"),
-                (f"{ym}-06", "TABUNGAN & INVESTASI", "Emergency Fund", "Dana Darurat", 1000000.0, "Alokasi rutin"),
-                (f"{ym}-07", "KEINGINAN", "Personal Care", "Skincare, make-up", 250000.0, "Kebutuhan perawatan"),
-            ]
-            cur.executemany(
-                "INSERT INTO finance_transactions (tanggal, tipe, kategori, deskripsi, total, notes) VALUES (?, ?, ?, ?, ?, ?)",
-                sample_tx,
-            )
+        if seeded_flag and seeded_flag["value"] == "true":
+            # Initial seeding was already completed previously.
+            # Do NOT re-insert deleted transactions, categories, subscriptions, or goals!
+            conn.commit()
+            self.load_vocab_if_needed(conn)
+            return
+
+        # Check if this DB was already initialized with categories in a previous version
+        cur.execute("SELECT COUNT(*) FROM finance_categories")
+        has_existing_categories = cur.fetchone()[0] > 0
+        if has_existing_categories:
+            # Mark as seeded so transactions won't be re-created if the user deleted them!
+            cur.execute("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('has_seeded_initial_data', 'true')")
+            conn.commit()
+            self.load_vocab_if_needed(conn)
+            return
+
+        # --- FIRST-TIME RUN ON A BRAND NEW DATABASE ONLY ---
+        # Seed Finance Categories from template_keuangan.xlsx
+        initial_categories = [
+            # PENDAPATAN
+            ("PENDAPATAN", "Pendapatan 1 (Gaji Utama)", None, 8000000.0),
+            ("PENDAPATAN", "Pendapatan 2 (Sampingan)", None, 500000.0),
+            ("PENDAPATAN", "Bonus & Lainnya", None, 0.0),
+            # KEBUTUHAN
+            ("KEBUTUHAN", "Biaya sewa", 1, 1750000.0),
+            ("KEBUTUHAN", "Listrik, Internet", 5, 500000.0),
+            ("KEBUTUHAN", "Makan", None, 1500000.0),
+            ("KEBUTUHAN", "Transport", None, 300000.0),
+            ("KEBUTUHAN", "Kartu Kredit", 20, 200000.0),
+            # KEINGINAN
+            ("KEINGINAN", "Belanja", None, 750000.0),
+            ("KEINGINAN", "Langganan", None, 150000.0),
+            ("KEINGINAN", "Staycation", None, 650000.0),
+            ("KEINGINAN", "Hobby", None, 200000.0),
+            ("KEINGINAN", "Personal Care", None, 300000.0),
+            ("KEINGINAN", "Makan di Luar", None, 500000.0),
+            # TABUNGAN & INVESTASI
+            ("TABUNGAN & INVESTASI", "Emergency Fund", 5, 1200000.0),
+            ("TABUNGAN & INVESTASI", "Investments", None, 500000.0),
+        ]
+        cur.executemany(
+            "INSERT INTO finance_categories (tipe, kategori, jatuh_tempo, target) VALUES (?, ?, ?, ?)",
+            initial_categories,
+        )
+
+        # Seed sample transactions only on fresh DB first run
+        today = datetime.date.today()
+        ym = today.strftime("%Y-%m")
+        sample_tx = [
+            (f"{ym}-01", "PENDAPATAN", "Pendapatan 1 (Gaji Utama)", "Main income", 8000000.0, "Gaji bulanan"),
+            (f"{ym}-02", "KEBUTUHAN", "Biaya sewa", "Apartment Rent", 1750000.0, "Sewa tempat tinggal"),
+            (f"{ym}-05", "KEINGINAN", "Langganan", "Netflix", 54000.0, "Langganan bulanan"),
+            (f"{ym}-06", "TABUNGAN & INVESTASI", "Emergency Fund", "Dana Darurat", 1000000.0, "Alokasi rutin"),
+            (f"{ym}-07", "KEINGINAN", "Personal Care", "Skincare, make-up", 250000.0, "Kebutuhan perawatan"),
+        ]
+        cur.executemany(
+            "INSERT INTO finance_transactions (tanggal, tipe, kategori, deskripsi, total, notes) VALUES (?, ?, ?, ?, ?, ?)",
+            sample_tx,
+        )
 
         # Seed sample subscriptions from template_keuangan.xlsx
-        cur.execute("SELECT COUNT(*) FROM finance_subscriptions")
-        if cur.fetchone()[0] == 0:
-            sample_subs = [
-                ("Netflix", "Entertainment", "Monthly", 1, 5, 54000.0, "Paket Basic"),
-                ("Spotify", "Entertainment", "Monthly", 1, 10, 49000.0, "Premium Individual"),
-                ("GoodNotes", "Productivity", "Annually", 1, 15, 169000.0, "Langganan Tahunan"),
-            ]
-            cur.executemany(
-                "INSERT INTO finance_subscriptions (nama, kategori, billing, auto_renew, tanggal_renew, harga, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                sample_subs,
-            )
+        sample_subs = [
+            ("Netflix", "Entertainment", "Monthly", 1, 5, 54000.0, "Paket Basic"),
+            ("Spotify", "Entertainment", "Monthly", 1, 10, 49000.0, "Premium Individual"),
+            ("GoodNotes", "Productivity", "Annually", 1, 15, 169000.0, "Langganan Tahunan"),
+        ]
+        cur.executemany(
+            "INSERT INTO finance_subscriptions (nama, kategori, billing, auto_renew, tanggal_renew, harga, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            sample_subs,
+        )
 
         # Seed sample saving goals
-        cur.execute("SELECT COUNT(*) FROM finance_goals")
-        if cur.fetchone()[0] == 0:
-            sample_goals = [
-                ("Dana Darurat Ideal", 15000000.0, 4500000.0, "2027-06-01", "6x pengeluaran kebutuhan"),
-                ("Upgrade Laptop Kerja", 12000000.0, 3000000.0, "2027-03-01", "Tabungan produktivitas"),
-            ]
-            cur.executemany(
-                "INSERT INTO finance_goals (nama_goal, target_nominal, terkumpul_nominal, deadline, notes) VALUES (?, ?, ?, ?, ?)",
-                sample_goals,
-            )
+        sample_goals = [
+            ("Dana Darurat Ideal", 15000000.0, 4500000.0, "2027-06-01", "6x pengeluaran kebutuhan"),
+            ("Upgrade Laptop Kerja", 12000000.0, 3000000.0, "2027-03-01", "Tabungan produktivitas"),
+        ]
+        cur.executemany(
+            "INSERT INTO finance_goals (nama_goal, target_nominal, terkumpul_nominal, deadline, notes) VALUES (?, ?, ?, ?, ?)",
+            sample_goals,
+        )
 
+        # Mark that initial seed has been completed
+        cur.execute("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('has_seeded_initial_data', 'true')")
         conn.commit()
         self.load_vocab_if_needed(conn)
 
@@ -357,13 +412,21 @@ class DatabaseManager:
                 (new_status, today, today, word_id),
             )
             cur.execute(
+                "DELETE FROM vocab_activity_log WHERE word_id = ? AND action_type = 'memorized'",
+                (word_id,),
+            )
+            cur.execute(
                 "INSERT INTO vocab_activity_log (word_id, action_type, log_date, score) VALUES (?, 'memorized', ?, 100)",
                 (word_id, today),
             )
         elif new_status == "belajar":
             cur.execute(
-                "UPDATE vocab SET status = ?, last_reviewed = ? WHERE id = ?",
+                "UPDATE vocab SET status = ?, memorized_date = NULL, last_reviewed = ? WHERE id = ?",
                 (new_status, today, word_id),
+            )
+            cur.execute(
+                "DELETE FROM vocab_activity_log WHERE word_id = ? AND action_type = 'memorized'",
+                (word_id,),
             )
             cur.execute(
                 "INSERT INTO vocab_activity_log (word_id, action_type, log_date, score) VALUES (?, 'learning', ?, 50)",
@@ -373,6 +436,10 @@ class DatabaseManager:
             cur.execute(
                 "UPDATE vocab SET status = 'belum', memorized_date = NULL, last_reviewed = ? WHERE id = ?",
                 (today, word_id),
+            )
+            cur.execute(
+                "DELETE FROM vocab_activity_log WHERE word_id = ? AND action_type = 'memorized'",
+                (word_id,),
             )
         conn.commit()
         conn.close()
@@ -638,15 +705,23 @@ class DatabaseManager:
     def save_finance_category(self, tipe: str, kategori: str, jatuh_tempo: Optional[int], target: float, cat_id: Optional[int] = None):
         conn = self.get_conn()
         cur = conn.cursor()
+        clean_kat = kategori.strip()
         if cat_id:
+            cur.execute("SELECT tipe, kategori FROM finance_categories WHERE id = ?", (cat_id,))
+            old_row = cur.fetchone()
             cur.execute(
                 "UPDATE finance_categories SET tipe = ?, kategori = ?, jatuh_tempo = ?, target = ? WHERE id = ?",
-                (tipe, kategori.strip(), jatuh_tempo, target, cat_id),
+                (tipe, clean_kat, jatuh_tempo, target, cat_id),
             )
+            if old_row and (old_row["kategori"] != clean_kat or old_row["tipe"] != tipe):
+                cur.execute(
+                    "UPDATE finance_transactions SET tipe = ?, kategori = ? WHERE tipe = ? AND kategori = ?",
+                    (tipe, clean_kat, old_row["tipe"], old_row["kategori"]),
+                )
         else:
             cur.execute(
                 "INSERT INTO finance_categories (tipe, kategori, jatuh_tempo, target) VALUES (?, ?, ?, ?)",
-                (tipe, kategori.strip(), jatuh_tempo, target),
+                (tipe, clean_kat, jatuh_tempo, target),
             )
         conn.commit()
         conn.close()
@@ -948,6 +1023,20 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
+    def update_subscription(self, sub_id: int, nama: str, kategori: str, billing: str, auto_renew: bool, tanggal_renew: Optional[int], harga: float, notes: str = ""):
+        conn = self.get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE finance_subscriptions
+            SET nama = ?, kategori = ?, billing = ?, auto_renew = ?, tanggal_renew = ?, harga = ?, notes = ?
+            WHERE id = ?
+            """,
+            (nama.strip(), kategori.strip(), billing, 1 if auto_renew else 0, tanggal_renew, harga, notes.strip(), sub_id),
+        )
+        conn.commit()
+        conn.close()
+
     def delete_subscription(self, sub_id: int):
         conn = self.get_conn()
         cur = conn.cursor()
@@ -986,3 +1075,147 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
+    # ------------------------------------------------------------------
+    # BOOKS / READING TRACKER
+    # ------------------------------------------------------------------
+    def get_books(self) -> List[Dict[str, Any]]:
+        conn = self.get_conn()
+        rows = [dict(r) for r in conn.execute("SELECT * FROM books ORDER BY (halaman_sekarang >= total_halaman AND total_halaman > 0) ASC, id DESC").fetchall()]
+        conn.close()
+        return rows
+
+    def save_book(self, judul: str, penulis: str, total_halaman: int, book_id: Optional[int] = None):
+        conn = self.get_conn()
+        if book_id:
+            conn.execute("UPDATE books SET judul = ?, penulis = ?, total_halaman = ? WHERE id = ?",
+                         (judul.strip(), penulis.strip(), total_halaman, book_id))
+            self._sync_book_progress(conn, book_id)
+        else:
+            conn.execute("INSERT INTO books (judul, penulis, total_halaman, halaman_sekarang, tanggal_mulai) VALUES (?, ?, ?, 0, ?)",
+                         (judul.strip(), penulis.strip(), total_halaman, datetime.date.today().strftime("%Y-%m-%d")))
+        conn.commit()
+        conn.close()
+
+    def delete_book(self, book_id: int):
+        conn = self.get_conn()
+        conn.execute("DELETE FROM reading_log WHERE book_id = ?", (book_id,))
+        conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
+        conn.commit()
+        conn.close()
+
+    def _sync_book_progress(self, conn: sqlite3.Connection, book_id: int):
+        row = conn.execute("SELECT MAX(to_page) AS mx FROM reading_log WHERE book_id = ?", (book_id,)).fetchone()
+        cur_page = int(row["mx"] or 0)
+        book = conn.execute("SELECT total_halaman FROM books WHERE id = ?", (book_id,)).fetchone()
+        total = int(book["total_halaman"]) if book else 0
+        if total > 0 and cur_page >= total:
+            last = conn.execute("SELECT MAX(log_date) AS d FROM reading_log WHERE book_id = ?", (book_id,)).fetchone()["d"]
+            conn.execute("UPDATE books SET halaman_sekarang = ?, tanggal_selesai = ? WHERE id = ?", (cur_page, last, book_id))
+        else:
+            conn.execute("UPDATE books SET halaman_sekarang = ?, tanggal_selesai = NULL WHERE id = ?", (cur_page, book_id))
+
+    def add_reading_log(self, book_id: int, log_date: str, to_page: int, notes: str = "") -> int:
+        """Catat sampai halaman `to_page`. Return jumlah halaman yang dibaca."""
+        conn = self.get_conn()
+        book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
+        if not book:
+            conn.close()
+            return 0
+        if book["total_halaman"] > 0:
+            to_page = min(to_page, int(book["total_halaman"]))
+        from_page = int(book["halaman_sekarang"])
+        pages = max(0, to_page - from_page)
+        conn.execute(
+            "INSERT INTO reading_log (book_id, log_date, from_page, to_page, pages_read, notes) VALUES (?, ?, ?, ?, ?, ?)",
+            (book_id, log_date, from_page, to_page, pages, notes.strip()),
+        )
+        self._sync_book_progress(conn, book_id)
+        conn.commit()
+        conn.close()
+        return pages
+
+    def delete_reading_log(self, log_id: int):
+        conn = self.get_conn()
+        row = conn.execute("SELECT book_id FROM reading_log WHERE id = ?", (log_id,)).fetchone()
+        if row:
+            conn.execute("DELETE FROM reading_log WHERE id = ?", (log_id,))
+            self._sync_book_progress(conn, row["book_id"])
+        conn.commit()
+        conn.close()
+
+    def get_reading_logs(self, book_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        conn = self.get_conn()
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM reading_log WHERE book_id = ? ORDER BY log_date DESC, id DESC LIMIT ?", (book_id, limit)).fetchall()]
+        conn.close()
+        return rows
+
+    def get_reading_stats(self) -> Dict[str, Any]:
+        conn = self.get_conn()
+        today = datetime.date.today()
+        month_prefix = today.strftime("%Y-%m")
+        total = conn.execute("SELECT COALESCE(SUM(pages_read),0) AS s FROM reading_log").fetchone()["s"]
+        month = conn.execute("SELECT COALESCE(SUM(pages_read),0) AS s FROM reading_log WHERE log_date LIKE ?", (month_prefix + "%",)).fetchone()["s"]
+        today_p = conn.execute("SELECT COALESCE(SUM(pages_read),0) AS s FROM reading_log WHERE log_date = ?", (today.strftime("%Y-%m-%d"),)).fetchone()["s"]
+        finished = conn.execute("SELECT COUNT(*) AS c FROM books WHERE total_halaman > 0 AND halaman_sekarang >= total_halaman").fetchone()["c"]
+        dates = {r["log_date"] for r in conn.execute("SELECT DISTINCT log_date FROM reading_log WHERE pages_read > 0").fetchall()}
+        conn.close()
+        streak = 0
+        d = today if today.strftime("%Y-%m-%d") in dates else today - datetime.timedelta(days=1)
+        while d.strftime("%Y-%m-%d") in dates:
+            streak += 1
+            d -= datetime.timedelta(days=1)
+        return {"total": total, "month": month, "today": today_p, "finished": finished, "streak": streak}
+
+    # ------------------------------------------------------------------
+    # CALENDAR
+    # ------------------------------------------------------------------
+    def add_calendar_activity(self, tanggal: str, kategori: str, judul: str, durasi_menit: int = 0, notes: str = ""):
+        conn = self.get_conn()
+        conn.execute(
+            "INSERT INTO calendar_activities (tanggal, kategori, judul, durasi_menit, notes) VALUES (?, ?, ?, ?, ?)",
+            (tanggal, kategori, judul.strip(), durasi_menit, notes.strip()),
+        )
+        conn.commit()
+        conn.close()
+
+    def delete_calendar_activity(self, act_id: int):
+        conn = self.get_conn()
+        conn.execute("DELETE FROM calendar_activities WHERE id = ?", (act_id,))
+        conn.commit()
+        conn.close()
+
+    def get_month_activity_marks(self, year: int, month: int) -> Dict[int, set]:
+        """Return {hari: {'keuangan','baca','kosakata','belajar'}}."""
+        prefix = f"{year:04d}-{month:02d}-%"
+        marks: Dict[int, set] = {}
+        conn = self.get_conn()
+        queries = [
+            ("keuangan", "SELECT tanggal AS d FROM finance_transactions WHERE tanggal LIKE ?"),
+            ("baca", "SELECT log_date AS d FROM reading_log WHERE log_date LIKE ?"),
+            ("kosakata", "SELECT log_date AS d FROM vocab_activity_log WHERE log_date LIKE ?"),
+            ("kosakata", "SELECT quiz_date AS d FROM quiz_sessions WHERE quiz_date LIKE ?"),
+            ("belajar", "SELECT tanggal AS d FROM calendar_activities WHERE tanggal LIKE ?"),
+        ]
+        for kind, q in queries:
+            for r in conn.execute(q, (prefix,)).fetchall():
+                try:
+                    marks.setdefault(int(str(r["d"])[8:10]), set()).add(kind)
+                except (ValueError, TypeError):
+                    pass
+        conn.close()
+        return marks
+
+    def get_day_activity(self, date_str: str) -> Dict[str, Any]:
+        conn = self.get_conn()
+        tx = [dict(r) for r in conn.execute("SELECT * FROM finance_transactions WHERE tanggal = ? ORDER BY id", (date_str,)).fetchall()]
+        reading = [dict(r) for r in conn.execute(
+            "SELECT l.*, b.judul, b.total_halaman FROM reading_log l JOIN books b ON b.id = l.book_id WHERE l.log_date = ? ORDER BY l.id",
+            (date_str,)).fetchall()]
+        vocab = {}
+        for r in conn.execute("SELECT action_type, COUNT(*) AS c FROM vocab_activity_log WHERE log_date = ? GROUP BY action_type", (date_str,)).fetchall():
+            vocab[r["action_type"]] = r["c"]
+        quiz = [dict(r) for r in conn.execute("SELECT * FROM quiz_sessions WHERE quiz_date = ? ORDER BY id", (date_str,)).fetchall()]
+        acts = [dict(r) for r in conn.execute("SELECT * FROM calendar_activities WHERE tanggal = ? ORDER BY id", (date_str,)).fetchall()]
+        conn.close()
+        return {"transactions": tx, "reading": reading, "vocab": vocab, "quiz": quiz, "activities": acts}
